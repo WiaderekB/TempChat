@@ -13,17 +13,19 @@ Limit jednej przesyłki wynosi 64 MiB i 2048 elementów. Limit unikatowej zawart
 
 ## Portainer na Docker Standalone
 
-1. W Portainerze przejdź do **Stacks → Add stack → Git repository**. Nazwij stack `rooms`.
-2. Wpisz adres `https://github.com/WiaderekB/TempChat.git`, gałąź `refs/heads/main` i ścieżkę `compose.yaml`. Dla prywatnego repozytorium włącz **Authentication**, wybierz **Basic** i użyj nazwy użytkownika GitHub oraz tokenu z prawem odczytu zawartości tego repozytorium.
+1. W Portainerze przejdź do **Stacks → Add stack → Web editor**. Nazwij stack `rooms`.
+2. Wklej zawartość [`portainer.yaml`](portainer.yaml). Docker pobierze źródła z gałęzi `main` publicznego repozytorium.
 3. Dodaj w **Environment variables** zmienną `ADMIN_PASSWORD` z własnym hasłem administratora o długości od 12 do 1024 znaków. Wygeneruj je np. poleceniem `openssl rand -hex 24`.
-4. Wybierz **Deploy the stack**. Kontener buduje się ze źródeł, nasłuchuje na porcie `3087` i udostępnia ten sam port na hoście.
+4. Wybierz **Deploy the stack**. Docker zbuduje obraz ze źródeł i udostępni aplikację na porcie `3087` hosta.
 
-Gdy Portainer pracuje z agentem zdalnym i nie może zbudować obrazu z kontekstu Git, uruchom poniższe polecenia w klonie repozytorium na hoście Dockera:
+W trybie **Git repository** wskaż `https://github.com/WiaderekB/TempChat.git`, gałąź `refs/heads/main` i plik `compose.yaml`. Publiczne repozytorium jest dostępne bez logowania.
+
+Jeśli Portainer zarządza zdalnym Dockerem i odrzuca krok budowania, wykonaj poniższe polecenia przy pierwszym uruchomieniu w klonie repozytorium na hoście Dockera.
 
 ```sh
 printf 'ADMIN_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
 chmod 600 .env
-docker compose up -d --build
+docker compose -p rooms up -d --build
 ```
 
 Przy aktualizacji przez Git pobierz zmiany i ponownie zbuduj obraz. Zachowaj wolumen `rooms_data`, aby przenieść istniejące pokoje do nowego kontenera.
