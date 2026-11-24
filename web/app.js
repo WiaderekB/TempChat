@@ -1,6 +1,6 @@
 import { $, element, button, link, request, run, formAction, notify, showError, present, choose,
   copyText, dateTime, codeBlock, selectLanguage, snippetPicker, iconControl, formatBytes } from './ui.js';
-import { resources, uploadPickers, assetCover, attachmentSize, limitAttachments, shareAttachments } from './files.js';
+import { resources, uploadPickers, assetCover, attachmentSize, limitAttachments, shareAttachments, readDrop } from './files.js';
 import { markdownHtml } from './markdown.mjs';
 
 const viewIds = ['join-view', 'room-view', 'login-view', 'admin-view'];
@@ -77,6 +77,8 @@ function activateRoom(code, initial) {
   let polling = false;
   let savedScroll = 0;
   let followLatest = true;
+  let currentScreen;
+  let assetReturn = '#assets';
   let people = [];
   let peopleModal;
   let roomSettings;
@@ -230,6 +232,8 @@ function activateRoom(code, initial) {
     const showGallery = showAsset || location.hash === '#assets' || location.hash === '#zasoby';
     const activeLink = location.hash === '#manage' && !manageLink.hidden ? 'manage-link'
       : showGallery ? 'gallery-link' : 'chat-link';
+    if (showAsset && currentScreen !== 'asset') assetReturn = currentScreen === 'chat-link' ? '#chat' : '#assets';
+    currentScreen = showAsset ? 'asset' : activeLink;
     const showChat = activeLink === 'chat-link';
     if (!showChat && !chat.hidden) {
       savedScroll = scroller.scrollTop;
@@ -239,6 +243,7 @@ function activateRoom(code, initial) {
     chat.hidden = !showChat;
     gallery.hidden = activeLink !== 'gallery-link' || showAsset;
     assetScreen.hidden = !showAsset;
+    $('asset-toolbar').hidden = !showAsset;
     management.hidden = activeLink !== 'manage-link';
     for (const id of ['chat-link', 'gallery-link', 'manage-link']) {
       if (id === activeLink) $(id).setAttribute('aria-current', 'page');
@@ -421,7 +426,8 @@ function activateRoom(code, initial) {
   iconControl($('attach-files'), 'file', 'Files', true);
   iconControl($('attach-folder'), 'folder', 'Folder', true);
   codeModeControl.addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
-  const uploads = uploadPickers($('chat-file-input'), $('chat-folder-input'), async (read) => {
+  const uploads = uploadPickers($('chat-file-input'), $('chat-folder-input'), acceptAttachments);
+  async function acceptAttachments(read) {
     if (picking || sendingAttachments || mode === 'code') return;
     picking = true;
     updateDraft();
@@ -435,6 +441,28 @@ function activateRoom(code, initial) {
       picking = false;
       updateDraft();
     }
+  }
+
+  chat.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    const canAttach = mode === 'text' && !picking && !sendingAttachments;
+    event.dataTransfer.dropEffect = canAttach ? 'copy' : 'none';
+    chat.classList.toggle('attaching-drop', canAttach);
+  });
+  chat.addEventListener('dragleave', (event) => {
+    if (!chat.contains(event.relatedTarget)) chat.classList.remove('attaching-drop');
+  });
+  chat.addEventListener('drop', (event) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    chat.classList.remove('attaching-drop');
+    if (mode === 'code') {
+      notify('Exit code mode to attach files.', true);
+      return;
+    }
+    attachMenu.open = false;
+    void acceptAttachments(() => readDrop(event.dataTransfer));
   });
   for (const [id, open] of [['attach-files', uploads.files], ['attach-folder', uploads.folder]]) {
     $(id).addEventListener('click', () => {
@@ -550,6 +578,27 @@ function activateRoom(code, initial) {
   window.addEventListener('hashchange', () => {
     showScreen();
     if (location.hash === '#manage') void checkManagement();
+  });
+  window.addEventListener('keydown', (event) => {
+    if (!alive || event.defaultPrevented || event.isComposing || $('dialog').open) return;
+    if (!assetScreen.hidden && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey &&
+        event.key.toLowerCase() === 's' && assets.saveEdit()) {
+      event.preventDefault();
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (event.key === 'Escape' && !assetScreen.hidden) {
+      event.preventDefault();
+      if (!assets.finishEditing()) location.hash = assetReturn;
+      return;
+    }
+    if (event.key === '/' && !event.target.closest?.('input, textarea, select, [contenteditable]')) {
+      if (!assetScreen.hidden && assets.focusSearch()) event.preventDefault();
+      else if (!gallery.hidden) {
+        event.preventDefault();
+        $('asset-search').focus();
+      }
+    }
   });
   state(initial);
   connected(true);

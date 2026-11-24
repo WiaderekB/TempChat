@@ -60,6 +60,34 @@
         <a href="#assets" id="gallery-link">Assets <span id="asset-count" class="pill" hidden></span></a>
         <a href="#manage" id="manage-link" hidden>Manage</a>
       </nav>
+      <div id="asset-toolbar" class="asset-toolbar" hidden>
+        <div class="asset-file-info">
+          <a class="button quiet" id="all-assets-link" href="#assets">All assets</a>
+          <button id="asset-tree-toggle" class="quiet" type="button" aria-expanded="false" aria-controls="asset-tree">Files</button>
+          <div class="asset-file-details">
+            <nav id="asset-breadcrumb" class="asset-breadcrumb" aria-label="Asset path"></nav>
+            <div class="asset-file-meta">
+              <span id="asset-source-info" class="asset-source-info" hidden></span>
+              <div id="asset-revision" class="asset-revision"></div>
+            </div>
+          </div>
+        </div>
+        <div class="asset-toolbar-actions" id="asset-controls" hidden>
+          <div class="asset-controls">
+            <label class="sr-only" for="asset-version">Version</label>
+            <select id="asset-version"></select>
+            <nav class="asset-modes" aria-label="Asset views">
+              <a class="button quiet" id="asset-preview-link">Preview</a>
+              <a class="button quiet" id="asset-changes-link">Changes</a>
+            </nav>
+            <div class="asset-actions" id="asset-actions"></div>
+          </div>
+          <div class="asset-file-actions">
+            <div id="asset-path-actions" class="asset-path-actions"></div>
+            <div id="asset-content-actions" class="asset-content-actions"></div>
+          </div>
+        </div>
+      </div>
       <div class="room-actions">
         <button class="quiet" type="button" id="show-people" aria-haspopup="dialog" title="Participants"><span class="people-icon" aria-hidden="true"></span><span id="people-count">0</span></button>
         <button class="quiet" type="button" id="share-room">Copy link</button>
@@ -68,6 +96,7 @@
     </header>
 
     <section id="chat-screen" class="chat" aria-label="Chat">
+      <p class="chat-drop-hint" aria-hidden="true">Drop files or folders to attach</p>
       <div id="messages-scroll" class="messages-scroll" tabindex="0" aria-label="Chat history">
         <div class="chat-column">
           <button type="button" class="quiet" id="load-older" hidden>Load earlier messages</button>
@@ -130,7 +159,7 @@
       <h2 id="gallery-title" class="sr-only">Asset gallery</h2>
       <div class="gallery-toolbar">
         <label for="asset-search" class="sr-only">Search room assets</label>
-        <input id="asset-search" class="asset-search" type="search" maxlength="1024" placeholder="Search files and paths…">
+        <input id="asset-search" class="asset-search" type="search" maxlength="1024" placeholder="Search files and paths…" aria-keyshortcuts="/">
         <div class="segmented" aria-label="Filter assets">
           <button type="button" id="all-tab" aria-pressed="true">All</button>
           <button type="button" id="files-tab" aria-pressed="false">Files &amp; folders</button>
@@ -151,48 +180,18 @@
     </section>
 
     <section id="asset-screen" class="asset-screen" aria-label="Asset browser" hidden>
-      <header class="asset-toolbar">
-        <div class="asset-title-group">
-          <a class="button quiet" href="#assets">All assets</a>
-          <span id="asset-title-divider" aria-hidden="true">/</span>
-          <h2 id="asset-title"></h2>
-        </div>
-        <div class="asset-controls" id="asset-controls" hidden>
-          <label class="sr-only" for="asset-version">Version</label>
-          <select id="asset-version"></select>
-          <nav class="asset-modes" aria-label="Asset views">
-            <a class="button quiet" id="asset-preview-link">Preview</a>
-            <a class="button quiet" id="asset-changes-link">Changes</a>
-          </nav>
-          <div class="asset-actions" id="asset-actions"></div>
-        </div>
-      </header>
       <div class="asset-workspace" id="asset-workspace" hidden>
-        <aside class="asset-sidebar" aria-label="Asset files">
+        <aside class="asset-sidebar" id="asset-sidebar" aria-label="Asset files">
           <div class="asset-sidebar-head">
             <h3 id="asset-tree-title">Files</h3>
             <label class="sr-only" for="asset-find">Find a file or folder</label>
-            <input id="asset-find" type="search" placeholder="Find a file or folder…">
+            <input id="asset-find" type="search" placeholder="Find a file or folder…" aria-keyshortcuts="/">
           </div>
           <div class="asset-tree" id="asset-tree"></div>
+          <div id="asset-sidebar-resize" role="separator" tabindex="0" aria-label="Resize file sidebar"
+               aria-orientation="vertical" aria-controls="asset-sidebar" title="Resize file sidebar"></div>
         </aside>
         <article class="asset-detail">
-          <div class="asset-detail-bar">
-            <div class="asset-file-info">
-              <button id="asset-tree-toggle" class="quiet" type="button" aria-expanded="false" aria-controls="asset-tree">Files</button>
-              <div class="asset-file-details">
-                <nav id="asset-breadcrumb" class="asset-breadcrumb" aria-label="Asset path"></nav>
-                <div class="asset-file-meta">
-                  <span id="asset-source-info" class="asset-source-info" hidden></span>
-                  <div id="asset-revision" class="asset-revision"></div>
-                </div>
-              </div>
-            </div>
-            <div class="asset-file-actions">
-              <div id="asset-path-actions" class="asset-path-actions"></div>
-              <div id="asset-content-actions" class="asset-content-actions"></div>
-            </div>
-          </div>
           <div class="asset-content" id="asset-content"></div>
         </article>
       </div>

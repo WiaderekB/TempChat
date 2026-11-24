@@ -23,6 +23,12 @@ const iconPaths = {
   plus: 'M5 12h14m-7-7v14',
   left: 'm15 6-6 6 6 6',
   right: 'm9 6 6 6-6 6',
+  eye: 'M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12Zm13 0a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
+  diff: 'M4 6h16v12H4ZM7 10h4m-2-2v4m4 3h4',
+  split: 'M3 5h18v14H3Zm9 0v14M6 9h3m6 0h3M6 13h3m6 0h3',
+  unified: 'M4 5h16v14H4Zm3 4h10M7 12h7m-7 3h10',
+  link: 'M10 13a4 4 0 0 0 6 .5l3-3a4 4 0 0 0-5.5-5.7l-1.7 1.6m2.2 4.6a4 4 0 0 0-6-.5l-3 3a4 4 0 0 0 5.5 5.7l1.7-1.6',
+  history: 'M3 11a9 9 0 1 1 2 6m-2-12v6h6m3-4v5l3 2',
 };
 
 export function glyph(name) {

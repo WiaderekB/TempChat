@@ -1,5 +1,5 @@
 import { $, element, button, link, request, choose, notify, copyText, dateTime, formatBytes,
-  formAction, assetIcons, highlightSource, languageLabel, selectLanguage, iconControl } from './ui.js';
+  formAction, assetIcons, highlightSource, languageLabel, selectLanguage, iconControl, glyph } from './ui.js';
 import { markdownHtml } from './markdown.mjs';
 
 const order = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
@@ -78,7 +78,7 @@ function icon(kind) {
 
 function lineCount(text) {
   if (!text) return 0;
-  return text.split('\n').length - Number(text.endsWith('\n'));
+  return text.split(/\r\n?|\n/).length - Number(/[\r\n]$/.test(text));
 }
 
 function sourceLabel(text, language) {
@@ -86,28 +86,51 @@ function sourceLabel(text, language) {
   return [language, lines + (lines === 1 ? ' line' : ' lines')].filter(Boolean).join(' · ');
 }
 
+function paintSourceLines(code, text, language, count) {
+  const highlighted = element('code');
+  highlightSource(highlighted, text, language);
+  const rows = document.createDocumentFragment();
+  let row;
+  let index = 0;
+
+  function nextLine() {
+    row = undefined;
+    if (++index > count) return;
+    row = element('span', '', 'source-line');
+    const number = element('span', String(index), 'line-number');
+    number.setAttribute('aria-hidden', 'true');
+    row.append(number);
+    rows.append(row);
+  }
+
+  nextLine();
+  for (const token of highlighted.childNodes) {
+    const parts = token.textContent.split('\n');
+    for (const [part, segment] of parts.entries()) {
+      if (part) nextLine();
+      if (!row || !segment) continue;
+      row.append(token.nodeType === Node.TEXT_NODE ? segment : element('span', segment, token.className));
+    }
+  }
+  code.replaceChildren(rows);
+}
+
 function sourcePreview(text, language) {
-  const scroll = element('div', '', 'source-scroll');
-  scroll.tabIndex = 0;
-  scroll.setAttribute('aria-label', 'Source preview');
-  const lines = element('div', '', 'numbered-source');
-  const gutter = element('pre', Array.from({ length: lineCount(text) }, (_, index) => index + 1).join('\n'), 'line-numbers');
-  gutter.setAttribute('aria-hidden', 'true');
-  const pre = element('pre');
+  const lines = element('pre', '', 'numbered-source source-lines');
+  lines.tabIndex = 0;
+  lines.setAttribute('aria-label', 'Source preview');
   const code = element('code');
-  highlightSource(code, text, language);
-  pre.append(code);
-  lines.append(gutter, pre);
-  scroll.append(lines);
-  return scroll;
+  const count = lineCount(text);
+  lines.style.setProperty('--gutter-digits', Math.max(2, String(count).length));
+  paintSourceLines(code, text.replace(/\r\n?/g, '\n'), language, count);
+  lines.append(code);
+  return lines;
 }
 
 function codeEditor(text, language, fileLanguage = '') {
   const summary = element('span');
   const grid = element('div', '', 'editor-grid');
-  const gutter = element('pre', '', 'line-numbers');
-  const input = element('div', '', 'editor-input');
-  const backdrop = element('pre');
+  const backdrop = element('pre', '', 'source-lines editor-backdrop');
   const highlighted = element('code');
   const field = element('textarea');
   field.setAttribute('aria-label', 'Code');
@@ -115,50 +138,38 @@ function codeEditor(text, language, fileLanguage = '') {
   field.setSelectionRange(0, 0);
   field.maxLength = language ? 64000 : 256 * 1024;
   field.required = Boolean(language);
-  field.wrap = 'off';
+  field.wrap = 'soft';
   field.spellcheck = false;
   field.autocapitalize = 'off';
   field.autocomplete = 'off';
   backdrop.setAttribute('aria-hidden', 'true');
-  gutter.setAttribute('aria-hidden', 'true');
   backdrop.append(highlighted);
-  input.append(backdrop, field);
-  grid.append(gutter, input);
+  grid.append(backdrop, field);
   const position = element('span', '', 'editor-position');
 
-  let count = 0;
-  let numbers = [];
-  let selectedLine = 0;
+  let activeLine;
 
   function scroll() {
-    gutter.scrollTop = backdrop.scrollTop = field.scrollTop;
-    backdrop.scrollLeft = field.scrollLeft;
+    highlighted.style.transform = 'translateY(' + -field.scrollTop + 'px)';
   }
 
   function cursor() {
     const before = field.value.slice(0, field.selectionDirection === 'backward' ? field.selectionStart : field.selectionEnd);
     const line = before.split('\n').length;
     position.textContent = 'Ln ' + line + ', Col ' + (before.length - before.lastIndexOf('\n'));
-    if (line !== selectedLine) {
-      selectedLine = line;
-      const current = element('span', String(line), 'editor-current');
-      gutter.replaceChildren(numbers.slice(0, line - 1).join('\n') + (line > 1 ? '\n' : ''),
-        current, '\n' + numbers.slice(line).join('\n'), '\n');
-      scroll();
+    const row = highlighted.children[line - 1];
+    if (row !== activeLine) {
+      activeLine?.classList.remove('editor-current');
+      activeLine = row;
+      activeLine?.classList.add('editor-current');
     }
   }
 
   function paint() {
     const syntax = language?.value ?? fileLanguage;
-    highlighted.replaceChildren();
-    highlightSource(highlighted, field.value, syntax);
-    highlighted.append('\n');
-    const nextCount = field.value.split('\n').length;
-    if (count !== nextCount) {
-      count = nextCount;
-      numbers = Array.from({ length: count }, (_, index) => index + 1);
-      selectedLine = 0;
-    }
+    const count = field.value.split('\n').length;
+    grid.style.setProperty('--gutter-digits', Math.max(2, String(count).length));
+    paintSourceLines(highlighted, field.value, syntax, count);
     summary.textContent = sourceLabel(field.value, languageLabel(syntax));
     cursor();
     scroll();
@@ -320,6 +331,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
   const versionSelect = $('asset-version');
   const tree = $('asset-tree');
   const sidebar = tree.closest('.asset-sidebar');
+  const splitter = $('asset-sidebar-resize');
   const search = $('asset-find');
   const toggleTree = $('asset-tree-toggle');
   const content = $('asset-content');
@@ -336,14 +348,89 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
   let activePdf;
   let dropTarget;
   let uploading = false;
+  let cancelEdit;
   let split = !window.matchMedia('(max-width: 640px)').matches;
+
+  iconControl($('all-assets-link'), 'left', 'All assets');
+  iconControl($('asset-preview-link'), 'eye', 'Preview');
+  iconControl($('asset-changes-link'), 'diff', 'Changes');
+
+  const sidebarPreference = 'tempchat.sidebarWidth';
+  try {
+    const previousWidth = Number(localStorage.getItem(sidebarPreference));
+    if (previousWidth > 0) workspace.style.setProperty('--asset-sidebar-width', previousWidth + 'px');
+  } catch {}
+
+  function syncSidebar(width, persist = false) {
+    if (!workspace.clientWidth || !splitter.getClientRects().length) return;
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const min = Math.round(rem * 12);
+    const max = Math.floor(Math.min(rem * 32, workspace.clientWidth * .45));
+    const value = Math.min(max, Math.max(min, Math.round(width ?? sidebar.getBoundingClientRect().width)));
+    if (width !== undefined) workspace.style.setProperty('--asset-sidebar-width', value + 'px');
+    splitter.setAttribute('aria-valuemin', min);
+    splitter.setAttribute('aria-valuemax', max);
+    splitter.setAttribute('aria-valuenow', value);
+    splitter.setAttribute('aria-valuetext', value + ' pixels');
+    if (persist) {
+      try { localStorage.setItem(sidebarPreference, value); } catch {}
+    }
+  }
+
+  splitter.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    splitter.focus();
+    splitter.setPointerCapture(event.pointerId);
+    workspace.classList.add('resizing-sidebar');
+  });
+  splitter.addEventListener('pointermove', (event) => {
+    if (splitter.hasPointerCapture(event.pointerId)) {
+      syncSidebar(event.clientX - workspace.getBoundingClientRect().left);
+    }
+  });
+  splitter.addEventListener('lostpointercapture', () => {
+    workspace.classList.remove('resizing-sidebar');
+    syncSidebar(undefined, true);
+  });
+  splitter.addEventListener('keydown', (event) => {
+    const width = sidebar.getBoundingClientRect().width;
+    const steps = { ArrowLeft: width - 24, ArrowRight: width + 24, Home: 0, End: Infinity };
+    if (!Object.hasOwn(steps, event.key)) return;
+    event.preventDefault();
+    syncSidebar(steps[event.key], true);
+  });
+  window.addEventListener('resize', () => syncSidebar());
+
+  function focusSearch() {
+    if (!active?.index) return false;
+    setTreeOpen(true);
+    search.focus();
+    return true;
+  }
+
+  function finishEditing() {
+    if (!cancelEdit) return false;
+    void cancelEdit();
+    return true;
+  }
+
+  function saveEdit() {
+    const editor = content.querySelector('.asset-editor');
+    if (!editor) return false;
+    editor.requestSubmit();
+    return true;
+  }
 
   function open(id, version) {
     location.hash = assetHash({ id, version });
   }
 
   function navigate(hash) {
-    if (hash !== activeHash) clearDropTarget();
+    if (hash !== activeHash) {
+      cancelEdit = undefined;
+      clearDropTarget();
+    }
     if (hash !== activeHash && activePdf) {
       activePdf.dispose();
       activePdf = undefined;
@@ -391,8 +478,8 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const url = base + 'assets/' + route.id;
     const changedAsset = active?.asset.id !== route.id;
     if (changedAsset) {
-      $('asset-title').textContent = '';
-      $('asset-title-divider').hidden = true;
+      $('asset-breadcrumb').replaceChildren();
+      $('asset-revision').replaceChildren();
       controls.hidden = true;
       workspace.hidden = true;
       search.value = '';
@@ -452,6 +539,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       renderRevision();
       setStatus('');
       workspace.hidden = false;
+      syncSidebar();
       content.scrollTop = 0;
       await renderContent(ticket);
     } catch (error) {
@@ -462,12 +550,10 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
   }
 
   function renderToolbar() {
-    const { asset, route, prefix } = active;
-    $('asset-title').textContent = asset.name;
-    $('asset-title').title = asset.name;
-    $('asset-title-divider').hidden = false;
+    const { asset, route, prefix, index } = active;
     controls.hidden = false;
     workspace.classList.toggle('single-asset', asset.kind !== 'folder');
+    toggleTree.hidden = asset.kind !== 'folder';
     const options = asset.history.map((item) => {
       const option = element('option', versionLabel(item.num) + ' · ' + dateTime(item.created));
       option.value = item.num;
@@ -484,7 +570,11 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       else control.removeAttribute('aria-current');
     }
     const actions = $('asset-actions');
-    actions.replaceChildren(link(asset.kind === 'folder' ? 'Download ZIP' : 'Download', prefix + '/download'));
+    const node = index?.nodes.get(route.path);
+    const selectedFile = node && !node.dir && node.state !== 'removed';
+    const download = prefix + '/download' + (selectedFile ? queryPath(route.path) : '');
+    actions.replaceChildren(iconControl(link('', download, 'button quiet'), 'download',
+      selectedFile ? 'Download file' : asset.kind === 'folder' ? 'Download ZIP' : 'Download'));
     if (route.version !== asset.history[0].num) actions.append(button('Restore', async () => {
       const confirmed = await choose('Restore version', 'A copy of v' + route.version + ' will become the latest version.',
         [['restore', 'Restore version', 'primary']]);
@@ -672,7 +762,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
   }
 
   function renderPath() {
-    const { asset, route, index, prefix } = active;
+    const { asset, route } = active;
     const path = $('asset-breadcrumb');
     path.replaceChildren();
     pathActions.replaceChildren();
@@ -688,13 +778,8 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       path.append(divider, position === segments.length - 1 ? element('span', segment, 'path-current')
         : link(segment, assetHash({ ...route, path: parent, mode: route.mode === 'edit' ? 'preview' : route.mode }), 'path-link'));
     }
-    const node = index?.nodes.get(route.path);
     if (route.mode !== 'edit' && route.path) {
-      pathActions.append(iconControl(button('', () => copyText(route.path, 'Path copied.'), 'quiet'), 'copy', 'Copy path'));
-      if (node && !node.dir && node.state !== 'removed') {
-        pathActions.append(iconControl(link('', prefix + '/download' + queryPath(route.path), 'button quiet'),
-          'download', 'Download file'));
-      }
+      pathActions.append(iconControl(button('', () => copyText(route.path, 'Path copied.'), 'quiet'), 'link', 'Copy path'));
     }
   }
 
@@ -707,8 +792,10 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     if (revision.note) details.append(element('span', revision.note, 'asset-revision-note'));
     meta.replaceChildren(details);
     if (route.mode !== 'changes') return;
-    const compare = element('label', 'Compare with', 'asset-baseline');
+    const compare = element('label', '', 'asset-baseline');
+    compare.append(glyph('history'));
     const select = element('select');
+    select.setAttribute('aria-label', 'Compare with');
     for (const num of [...asset.history.map((item) => item.num).filter((num) => num < route.version), 0]) {
       const option = element('option', versionLabel(num));
       option.value = num;
@@ -784,7 +871,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const label = preview.type === 'zip' ? 'ZIP contents' : table ? extension.toUpperCase() + ' · ' + preview.rows.length + ' rows'
       : sourceLabel(preview.text, markdown ? 'Markdown' : languageLabel(language));
     if (preview.editable && route.version === asset.history[0].num) {
-      actions.push(iconControl(link('', assetHash({ ...route, mode: 'edit' })), 'edit', 'Edit', true));
+      actions.push(iconControl(link('', assetHash({ ...route, mode: 'edit' }), 'button quiet'), 'edit', 'Edit'));
     }
     if (preview.pdf_path) {
       actions.push(link('View PDF', assetHash({ ...route, path: preview.pdf_path })));
@@ -792,16 +879,18 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const source = () => binary ? element('p', preview.text, 'asset-empty')
       : sourcePreview(preview.text, language);
     if (markdown || table) {
-      const flip = button('Source', () => {
-        const showSource = flip.textContent === 'Source';
-        flip.textContent = showSource ? (table ? 'Table' : 'Rendered') : 'Source';
-        if (showSource) {
+      let showingSource = false;
+      const flip = iconControl(button('', () => {
+        showingSource = !showingSource;
+        iconControl(flip, showingSource ? (table ? 'table' : 'eye') : 'code',
+          showingSource ? (table ? 'Table' : 'Rendered') : 'Source', true);
+        if (showingSource) {
           body.replaceChildren(sourcePreview(preview.text, table ? '' : language));
           if (preview.source_limited) body.prepend(element('p', 'This is a partial source preview.', 'asset-empty'));
         } else {
           renderFormatted();
         }
-      });
+      }), 'code', 'Source', true);
       actions.push(flip);
       renderFormatted();
     } else {
@@ -894,8 +983,8 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const output = element('div', '', 'diff-output');
     const modes = element('div', '', 'segmented');
     modes.setAttribute('aria-label', 'Diff layout');
-    const splitButton = button('Side by side', () => { split = true; draw(); });
-    const unifiedButton = button('Unified', () => { split = false; draw(); });
+    const splitButton = iconControl(button('', () => { split = true; draw(); }), 'split', 'Side by side');
+    const unifiedButton = iconControl(button('', () => { split = false; draw(); }), 'unified', 'Unified');
     modes.append(splitButton, unifiedButton);
     setSourceInfo(versionLabel(route.from) + ' to ' + versionLabel(route.version), modes);
     content.replaceChildren(output);
@@ -919,7 +1008,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       selectLanguage(language, preview.lang);
     }
     const { summary, grid, field: code, position } = codeEditor(preview.text, language, fileLanguage);
-    setSourceInfo(summary, ...(language ? [language] : []));
+    setSourceInfo(summary);
     const footer = element('footer', '', 'editor-footer');
     const note = element('input', '', 'editor-note');
     note.maxLength = 200;
@@ -928,10 +1017,24 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const actions = element('div', '', 'editor-actions');
     const submit = iconControl(element('button', '', 'primary'), 'check', 'Save', true);
     submit.type = 'submit';
+    submit.title = 'Save (Ctrl or Command + S)';
+    submit.setAttribute('aria-keyshortcuts', 'Control+S Meta+S Control+Enter Meta+Enter');
     const error = element('div', '', 'error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
-    actions.append(iconControl(link('', assetHash({ ...route, mode: 'preview' }), 'button quiet'), 'close', 'Cancel editing'), submit);
+    const initial = code.value;
+    const initialLanguage = language?.value;
+    cancelEdit = async () => {
+      if (submit.disabled) return;
+      if (code.value !== initial || note.value || language?.value !== initialLanguage) {
+        const discard = await choose('Discard edits?', 'Your unsaved changes will be lost.',
+          [['discard', 'Discard edits', 'danger']]);
+        if (!discard) return;
+      }
+      if (ticket === generation) go({ mode: 'preview' });
+    };
+    if (language) actions.append(language);
+    actions.append(iconControl(button('', cancelEdit, 'quiet'), 'close', 'Cancel editing'), submit);
     footer.append(error, note, position, actions);
     form.append(grid, footer);
     content.replaceChildren(form);
@@ -956,5 +1059,5 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     });
   }
 
-  return { open, navigate };
+  return { open, navigate, focusSearch, finishEditing, saveEdit };
 }

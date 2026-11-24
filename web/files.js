@@ -49,7 +49,7 @@ async function collectDropped(entry, entries, path) {
   }
 }
 
-function readDrop(transfer) {
+export function readDrop(transfer) {
   const entries = Array.from(transfer.items).map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
   const files = Array.from(transfer.files);
   if (!entries.length) return Promise.resolve(filePackets(files));
@@ -314,5 +314,6 @@ export function resources(base, afterUpload) {
   search.addEventListener('input', () => render());
   more.addEventListener('click', () => { if (nextPage) run(more, nextPage); });
 
-  return { render, navigate: viewer.navigate, openAsset: viewer.open };
+  return { render, navigate: viewer.navigate, openAsset: viewer.open, focusSearch: viewer.focusSearch,
+    finishEditing: viewer.finishEditing, saveEdit: viewer.saveEdit };
 }
