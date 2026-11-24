@@ -401,6 +401,7 @@ class App:
             return {'type':'folder','entries':[{'path':p,'dir':v is None} for p,v in sorted(manifest.items())]}
         if not path and row['kind'] != 'folder':
             path = next(iter(manifest))
+        mime = 'application/octet-stream'
         if path:
             require(manifest.get(path),404,'File not found.')
             if op == 'preview':
@@ -412,8 +413,17 @@ class App:
                         preview['type'] == 'table' and assets.editable_text(db, room, manifest[path]) is not None
                     )):
                         preview['editable'] = True
-                if self.tex_socket and self.is_latex(row, path):
-                    preview['latex'] = True
+                if self.is_latex(row, path):
+                    if self.tex_socket:
+                        preview['latex'] = True
+                    if row['kind'] == 'folder':
+                        pdf_path = assets.companion_path(manifest, path, '.pdf')
+                        if pdf_path and assets.is_pdf(db, room, manifest[pdf_path]):
+                            preview['pdf_path'] = pdf_path
+                if row['kind'] == 'folder' and preview['type'] == 'pdf':
+                    tex_path = assets.companion_path(manifest, path, '.tex')
+                    if tex_path:
+                        preview['tex_path'] = tex_path
                 return preview
             payload = assets.get_blob(db,room,manifest[path])
             if row['kind'] == 'code':
@@ -423,11 +433,13 @@ class App:
                     filename += suffix
             else:
                 filename = path.split('/')[-1]
+                if filename.lower().endswith('.pdf') and assets.has_pdf_header(payload):
+                    mime = 'application/pdf'
         else:
             payload = assets.archive(db,room,row['name'],manifest)
             filename = row['name']+'.zip'
         req.headers.append(('Content-Disposition',"attachment; filename*=UTF-8''"+quote(filename,safe='')))
-        return 'application/octet-stream',payload
+        return mime,payload
 
     @staticmethod
     def is_latex(row, path):

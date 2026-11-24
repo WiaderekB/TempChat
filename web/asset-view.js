@@ -333,7 +333,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
   let assetCache;
   let treeCache;
   let active;
-  let compiledPdf;
+  let activePdf;
   let dropTarget;
   let uploading = false;
   let split = !window.matchMedia('(max-width: 640px)').matches;
@@ -344,9 +344,9 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
 
   function navigate(hash) {
     if (hash !== activeHash) clearDropTarget();
-    if (hash !== activeHash && compiledPdf) {
-      compiledPdf.dispose();
-      compiledPdf = undefined;
+    if (hash !== activeHash && activePdf) {
+      activePdf.dispose();
+      activePdf = undefined;
     }
     const route = readRoute(hash);
     if (!route) {
@@ -755,8 +755,17 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       renderEditor(preview, ticket, editingFile ? extension : undefined);
       return;
     }
+    if (preview.type === 'pdf') {
+      const { pdfPreview } = await import('./pdf-preview.js');
+      if (ticket !== generation) return;
+      const actions = preview.tex_path ? [link('LaTeX source', assetHash({ ...route, path: preview.tex_path }))] : [];
+      setSourceInfo('PDF', ...actions);
+      activePdf = pdfPreview({ url: prefix + '/download' + queryPath(route.path) }, filename);
+      content.replaceChildren(activePdf.panel);
+      return;
+    }
     const binary = preview.type === 'binary';
-    if (binary && !preview.latex) {
+    if (binary && !preview.latex && !preview.pdf_path) {
       content.replaceChildren(element('p', preview.text, 'asset-empty'));
       return;
     }
@@ -778,6 +787,9 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       : sourceLabel(preview.text, markdown ? 'Markdown' : languageLabel(language));
     if (preview.editable && route.version === asset.history[0].num) {
       actions.push(link('Edit file', assetHash({ ...route, mode: 'edit' })));
+    }
+    if (preview.pdf_path) {
+      actions.push(link('View PDF', assetHash({ ...route, path: preview.pdf_path })));
     }
     const source = () => binary ? element('p', preview.text, 'asset-empty')
       : sourcePreview(preview.text, language);
@@ -833,8 +845,8 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
             const { pdfPreview } = await import('./pdf-preview.js');
             if (ticket !== generation) return;
             if (pdf.type !== 'application/pdf') throw new Error('The compiler did not return a PDF.');
-            compiledPdf?.dispose();
-            compiledPdf = pdfPreview(pdf, filename.replace(/\.tex$/i, '') + '.pdf');
+            activePdf?.dispose();
+            activePdf = pdfPreview({ blob: pdf }, filename.replace(/\.tex$/i, '') + '.pdf');
             compiledEngine = engine.value;
           } catch (error) {
             if (ticket === generation) {
@@ -849,7 +861,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
         }
         showingPdf = true;
         toggle.textContent = 'Source';
-        body.replaceChildren(compiledPdf.panel);
+        body.replaceChildren(activePdf.panel);
       });
       engine.addEventListener('change', () => {
         feedback.hidden = true;

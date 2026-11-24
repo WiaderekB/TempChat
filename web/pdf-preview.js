@@ -3,23 +3,26 @@ import { AnnotationMode, getDocument, GlobalWorkerOptions } from './vendor/pdfjs
 
 GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
 
-export function pdfPreview(pdf, filename) {
-  const panel = element('div', '', 'latex-preview');
-  const toolbar = element('div', '', 'latex-actions');
+export function pdfPreview({ blob, url }, filename) {
+  const panel = element('div');
+  const toolbar = element('div', '', 'pdf-actions');
   const status = element('span', 'Loading PDF preview…', 'muted');
   status.setAttribute('role', 'status');
   const previous = element('button', 'Previous');
   const next = element('button', 'Next');
   previous.type = next.type = 'button';
   previous.hidden = next.hidden = true;
-  const url = URL.createObjectURL(pdf);
-  const download = link('Download PDF', url);
-  download.download = filename;
-  const open = link('Open PDF', url);
-  open.target = '_blank';
-  open.rel = 'noopener';
-  toolbar.append(previous, status, next, download, open);
-  const canvas = element('canvas', '', 'latex-page');
+  toolbar.append(previous, status, next);
+  const objectUrl = blob ? URL.createObjectURL(blob) : undefined;
+  if (objectUrl) {
+    const download = link('Download PDF', objectUrl);
+    download.download = filename;
+    const open = link('Open PDF', objectUrl);
+    open.target = '_blank';
+    open.rel = 'noopener';
+    toolbar.append(download, open);
+  }
+  const canvas = element('canvas', '', 'pdf-page');
   canvas.setAttribute('role', 'img');
   canvas.hidden = true;
   panel.append(toolbar, canvas);
@@ -35,9 +38,9 @@ export function pdfPreview(pdf, filename) {
 
   async function load() {
     try {
-      const data = new Uint8Array(await pdf.arrayBuffer());
+      const input = blob ? { data: new Uint8Array(await blob.arrayBuffer()) } : { url };
       if (disposed) return;
-      loading = getDocument({ data, disableFontFace: true, useWasm: false, maxImageSize: 16_000_000 });
+      loading = getDocument({ ...input, disableFontFace: true, useSystemFonts: true, useWasm: false, maxImageSize: 16_000_000 });
       document = await loading.promise;
       if (!disposed) await draw(1);
     } catch {
@@ -61,6 +64,7 @@ export function pdfPreview(pdf, filename) {
       canvas.setAttribute('aria-label', status.textContent);
       canvas.hidden = false;
       previous.hidden = next.hidden = document.numPages === 1;
+      panel.closest('.asset-content')?.scrollTo({ top: 0 });
     } catch {
       if (!disposed) status.textContent = 'This page could not be rendered.';
     } finally {
@@ -73,7 +77,7 @@ export function pdfPreview(pdf, filename) {
     panel,
     dispose() {
       disposed = true;
-      URL.revokeObjectURL(url);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
       loading?.destroy().catch(() => {});
     },
   };

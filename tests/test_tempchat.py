@@ -193,6 +193,35 @@ class TempChatTest(unittest.TestCase):
             self.assertEqual((status, pdf, headers['Content-Type']), (200, b'%PDF-1.5', 'application/pdf'))
             self.assertTrue(headers['Content-Disposition'].endswith('main.pdf'))
 
+    def test_uploaded_pdf_and_tex_companion_use_the_selected_folder_version(self):
+        base = self.room()
+        tex = br'\documentclass{article}'
+        pdf = b'%PDF-1.7\nuploaded document'
+        project = self.save(make_packet('Reports', 'folder', {
+            'draft/report.tex': tex, 'draft/report.PDF': pdf, 'draft/invalid.pdf': b'invalid',
+        }))
+        self.save(make_packet('Reports', 'folder', {'draft/report.tex': tex}, mode='version'))
+        url = base + f'assets/{project["asset"]}/'
+        source = self.call(self.ala, 200, 'GET', url + '1/preview?path=draft/report.tex')
+        self.assertEqual((source['text'], source['pdf_path']), (tex.decode(), 'draft/report.PDF'))
+        self.assertNotIn('latex', source)
+        new_source = self.call(self.ala, 200, 'GET', url + '2/preview?path=draft/report.tex')
+        self.assertNotIn('pdf_path', new_source)
+        preview = self.call(self.ala, 200, 'GET', url + '1/preview?path=draft/report.PDF')
+        self.assertEqual(preview, {'type': 'pdf', 'tex_path': 'draft/report.tex'})
+        download = url + '1/download?path=draft/report.PDF'
+        self.call(self.ola, 401, 'GET', download)
+        status, body, headers = self.ala.call('GET', download)
+        self.assertEqual((status, body, headers['Content-Type']), (200, pdf, 'application/pdf'))
+        self.assertTrue(headers['Content-Disposition'].startswith('attachment;'))
+        invalid = self.call(self.ala, 200, 'GET', url + '1/preview?path=draft/invalid.pdf')
+        self.assertEqual(invalid['type'], 'binary')
+
+        standalone = self.save(make_packet('standalone.pdf', 'file', {'standalone.pdf': pdf}))
+        prefix = base + f'assets/{standalone["asset"]}/1/'
+        self.assertEqual(self.call(self.ala, 200, 'GET', prefix + 'preview'), {'type': 'pdf'})
+        self.assertEqual(self.call(self.ala, 200, 'GET', prefix + 'download'), pdf)
+
     def test_word_diff_marks_only_the_changed_text(self):
         self.assertEqual(assets.diff_words('Zmień szerokość na 12.', 'Zmień szerokość na 18.'), {
             'before': [['Zmień szerokość na ', False], ['12', True], ['.', False]],

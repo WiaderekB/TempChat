@@ -39,7 +39,7 @@ Otwórz główny plik `.tex` projektu albo kompletny fragment LaTeX w galerii za
 
 Obraz TeX Live zawiera m.in. AMS, `graphicx`, TikZ, pakiety naukowe, polskie wzorce dzielenia wyrazów i BibTeX. Własne pliki `.sty`, `.cls`, `.bib` oraz grafiki dodaj do folderu. Dostępne są pakiety z obrazu i z folderu. Usługa kompiluje bez dostępu do sieci, poleceń powłoki i wolumenu pokoi. Limit to 35 sekund na kompilację i 16 MiB na PDF. Bibliografie uruchamiane przez Biber oraz pakiety wymagające uruchamiania poleceń powłoki są poza obsługiwanym zestawem.
 
-Opcja **Render PDF** jest dostępna po uruchomieniu stacka w Dockerze. Samo uruchomienie lokalnego serwera Pythona udostępnia podgląd źródła.
+Przesłane pliki PDF można przeglądać bezpośrednio w galerii. Gdy w tym samym katalogu i wersji folderu znajdują się pliki o tej samej nazwie z rozszerzeniami `.tex` i `.pdf`, przycisk **View PDF** otwiera przesłany dokument. Kompilacja źródła przez **Render PDF** wymaga usługi `tex` ze stacka Dockera.
 
 ## Nginx Proxy Manager
 

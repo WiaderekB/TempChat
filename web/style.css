@@ -333,10 +333,10 @@ pre { background: #101619; border: 1px solid var(--line); color: #dae8ef; border
 .asset-image-frame { padding: 1rem; }
 .latex-engine { max-width: 100%; }
 .latex-feedback { margin: .65rem 1rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-.latex-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; padding: .5rem 1rem; border-bottom: 1px solid var(--line); }
-.latex-actions [role="status"] { margin-inline: .2rem; }
-.latex-actions a:first-of-type { margin-inline-start: auto; }
-.latex-page { display: block; width: auto; max-width: calc(100% - 1.25rem); height: auto; max-height: 76dvh; object-fit: contain; margin: .65rem auto; background: white; }
+.pdf-actions { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; padding: .45rem 1rem; border-bottom: 1px solid var(--line); background: var(--deep); }
+.pdf-actions [role="status"] { margin-inline: .2rem; }
+.pdf-actions a:first-of-type { margin-inline-start: auto; }
+.pdf-page { display: block; width: auto; max-width: min(calc(100% - 1.25rem), 64rem); height: auto; margin: .65rem auto; background: white; }
 .asset-table { padding: .65rem 1rem; }
 .asset-table-scroll { overflow: auto; }
 .asset-table table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: .85rem; }

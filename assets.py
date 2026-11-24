@@ -288,8 +288,30 @@ def search_paths(db, room, query, category, offset):
     return {'items': results[:SEARCH_PAGE], 'next': offset + SEARCH_PAGE if len(results) > SEARCH_PAGE else None}
 
 
+def has_pdf_header(data):
+    return b'%PDF-' in data[:1024]
+
+
+def is_pdf(db, room, digest):
+    header = db.execute('SELECT substr(data,1,1024) FROM blobs WHERE room=? AND digest=?', (room, digest)).fetchone()
+    return bool(header and has_pdf_header(header[0]))
+
+
+def companion_path(manifest, path, extension):
+    stem = path.rsplit('.', 1)[0]
+    exact = stem + extension
+    if manifest.get(exact):
+        return exact
+    return next((candidate for candidate, digest in manifest.items() if digest and candidate.startswith(stem + '.')
+                 and candidate[len(stem):].lower() == extension), None)
+
+
 def preview(db, room, digest, path=''):
     suffix = PurePosixPath(path).suffix.lower() if path else ''
+    if suffix == '.pdf':
+        if is_pdf(db, room, digest):
+            return {'type': 'pdf'}
+        return {'type': 'binary', 'text': 'PDF preview unavailable. Download the file to open it.'}
     if suffix in ('.csv', '.tsv'):
         data = table_preview(db, room, digest, suffix)
         if data is not None:
