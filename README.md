@@ -18,6 +18,8 @@ Limit jednej przesyłki wynosi 64 MiB i 2048 elementów. Limit unikatowej zawart
 3. Dodaj w **Environment variables** zmienną `ADMIN_PASSWORD` z własnym hasłem administratora o długości od 12 do 1024 znaków. Wygeneruj je np. poleceniem `openssl rand -hex 24`.
 4. Wybierz **Deploy the stack**. Docker zbuduje obraz ze źródeł i udostępni aplikację na porcie `3087` hosta.
 
+Domyślny adres aplikacji to `https://tempchat.wiaderek.xyz`. Przy innej domenie ustaw `APP_URL` w zmiennych stacka na dokładny adres publiczny z protokołem, np. `https://chat.example.org`. Przy zmianie adresu zapisz ustawienia i wdróż ponownie istniejący stack.
+
 W trybie **Git repository** wskaż `https://github.com/WiaderekB/TempChat.git`, gałąź `refs/heads/main` i plik `compose.yaml`. Publiczne repozytorium jest dostępne bez logowania.
 
 Jeśli Portainer zarządza zdalnym Dockerem i odrzuca krok budowania, wykonaj poniższe polecenia przy pierwszym uruchomieniu w klonie repozytorium na hoście Dockera.
@@ -36,12 +38,12 @@ Dodaj **Proxy Host** z następującymi ustawieniami:
 
 | Pole | Wartość |
 | --- | --- |
-| Domain Names | `rooms.wiaderek.xyz` |
+| Domain Names | `tempchat.wiaderek.xyz` |
 | Scheme | `http` |
 | Forward Hostname / IP | Adres LAN hosta Dockera |
 | Forward Port | `3087` |
 | Websockets Support | Wyłączone. TempChat odświeża rozmowę przez HTTP. |
-| SSL | Certyfikat dla `rooms.wiaderek.xyz` i włączone **Force SSL** |
+| SSL | Certyfikat dla `tempchat.wiaderek.xyz` i włączone **Force SSL** |
 
 W zakładce **Advanced** dodaj dyrektywę umożliwiającą przesłanie 64 MiB danych z nagłówkiem:
 
@@ -49,9 +51,9 @@ W zakładce **Advanced** dodaj dyrektywę umożliwiającą przesłanie 64 MiB da
 client_max_body_size 66m;
 ```
 
-Rekord DNS `rooms` skieruj na adres używany przez Nginx Proxy Manager. Publiczny ruch kieruj do NPM na porty 80 i 443. Portu 3087 używa NPM do połączenia z hostem Dockera. Jeśli chcesz liczyć limity prób osobno dla adresów klientów, ustaw opcjonalne `TRUSTED_PROXY` na adres lub CIDR zaufanego NPM widziany przez kontener. Proxy musi ustawiać `X-Real-IP` na adres klienta.
+Rekord DNS `tempchat` skieruj na adres używany przez Nginx Proxy Manager. Publiczny ruch kieruj do NPM na porty 80 i 443. Portu 3087 używa NPM do połączenia z hostem Dockera. Jeśli chcesz liczyć limity prób osobno dla adresów klientów, ustaw opcjonalne `TRUSTED_PROXY` na adres lub CIDR zaufanego NPM widziany przez kontener. Proxy musi ustawiać `X-Real-IP` na adres klienta.
 
-Po wdrożeniu sprawdź `https://rooms.wiaderek.xyz/api/health`, a następnie zaloguj się na `https://rooms.wiaderek.xyz/admin` i utwórz pierwszy pokój.
+Po wdrożeniu sprawdź `https://tempchat.wiaderek.xyz/api/health`, a następnie zaloguj się na `https://tempchat.wiaderek.xyz/admin` i utwórz pierwszy pokój.
 
 [Dokumentacja stacków w Portainerze](https://docs.portainer.io/user/docker/stacks/add)
 
