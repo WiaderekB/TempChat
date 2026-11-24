@@ -7,6 +7,45 @@ export function element(tag, text = '', className = '') {
   return node;
 }
 
+const iconPaths = {
+  edit: 'M13.5 6.5 17.5 10.5M4 20l4.5-1 11-11a2.8 2.8 0 0 0-4-4l-11 11Z',
+  copy: 'M8 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v3M10 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z',
+  download: 'M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4',
+  check: 'm5 12 4 4L19 6',
+  close: 'm6 6 12 12M18 6 6 18',
+  attach: 'm8 13 7-7a2.1 2.1 0 0 1 3 3l-9 9a4.25 4.25 0 0 1-6-6l9-9a6.4 6.4 0 0 1 9 9l-8 8',
+  folder: 'M3 6h6l2 2h10v11H3Z',
+  file: 'M6 3h8l4 4v14H6ZM14 3v5h4M9 12h6m-6 4h6',
+  code: 'm8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16',
+  table: 'M3 4h18v16H3Zm0 5h18M3 14h18M9 9v11m6-11v11',
+  image: 'M3 4h18v16H3Zm0 13 5-5 4 4 3-3 6 6m-6-11h.01',
+  minus: 'M5 12h14',
+  plus: 'M5 12h14m-7-7v14',
+  left: 'm15 6-6 6 6 6',
+  right: 'm9 6 6 6-6 6',
+};
+
+export function glyph(name) {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  for (const [attr, value] of Object.entries({ viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    'stroke-width': '1.7', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' })) {
+    svg.setAttribute(attr, value);
+  }
+  svg.classList.add('glyph');
+  const path = document.createElementNS(svg.namespaceURI, 'path');
+  path.setAttribute('d', iconPaths[name]);
+  svg.append(path);
+  return svg;
+}
+
+export function iconControl(control, icon, label, showLabel = false) {
+  control.replaceChildren(glyph(icon), ...(showLabel ? [label] : []));
+  control.title = label;
+  control.setAttribute('aria-label', label);
+  control.classList.toggle('icon-control', !showLabel);
+  return control;
+}
+
 export function button(label, action, className = '') {
   const node = element('button', label, className);
   node.type = 'button';

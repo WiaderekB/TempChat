@@ -73,7 +73,7 @@
           <button type="button" class="quiet" id="load-older" hidden>Load earlier messages</button>
           <div class="chat-empty" id="chat-empty">
             <h2>Start the conversation</h2>
-            <p>Send a message or share some code.</p>
+            <p>Send a message or share a file, folder, or snippet.</p>
           </div>
           <ol id="messages" aria-live="polite" aria-relevant="additions"></ol>
         </div>
@@ -105,7 +105,19 @@
                 <option value="ts">TypeScript</option>
               </select>
             </div>
-            <button class="compose-mode" id="code-mode" type="button" aria-pressed="false"><span aria-hidden="true">&lt;/&gt;</span> Code</button>
+            <ul id="pending-attachments" class="pending-attachments" aria-label="Attachments to send" hidden></ul>
+            <div class="compose-tools">
+              <details id="attach-menu" class="attach-menu">
+                <summary id="attach-toggle" class="icon-control quiet" title="Attach" aria-label="Attach files or folder"></summary>
+                <div class="attach-options">
+                  <button id="attach-files" class="quiet" type="button">Files</button>
+                  <button id="attach-folder" class="quiet" type="button">Folder</button>
+                </div>
+              </details>
+              <input type="file" id="chat-file-input" multiple hidden>
+              <input type="file" id="chat-folder-input" webkitdirectory multiple hidden>
+              <button class="compose-mode quiet" id="code-mode" type="button" aria-pressed="false">Code</button>
+            </div>
             <label class="sr-only" for="message-text">Message</label>
             <textarea id="message-text" maxlength="64000" placeholder="Write a message…" rows="1" required></textarea>
             <button type="submit" class="primary" title="Send (Ctrl or Command + Enter)" aria-keyshortcuts="Control+Enter Meta+Enter">Send</button>

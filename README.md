@@ -2,10 +2,10 @@
 
 Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Administrator tworzy pokój, a uczestnicy dołączają nickiem i kodem w formacie `123 - 456` lub linkiem.
 
-- Czat z wyróżnieniem własnych wiadomości, rozwijanym podglądem długiego tekstu i licznikiem uczestników otwierającym ich listę.
+- Czat z wyróżnieniem własnych wiadomości, rozwijanym podglądem długiego tekstu i licznikiem uczestników. Spinacz pozwala wysłać do 12 plików lub folderów w jednej wiadomości z opcjonalnym opisem. Wspólny limit danych to 64 MiB.
 - Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Wyszukiwanie w galerii obejmuje nazwy zasobów i ścieżki w ich najnowszych wersjach. Przeglądarka zasobów ma też wyszukiwanie w wybranym folderze, podgląd tabel CSV i TSV oraz pobieranie pojedynczych plików i folderów jako ZIP.
 - Historia wersji i porównanie tekstu w dwóch kolumnach lub w jednym widoku. Przywrócenie zapisuje kolejną wersję.
-- Edytor kodu z numerami linii, kolorowaniem składni i ligaturami Fira Code. Pliki tekstowe UTF-8 do 256 KiB można edytować w najnowszej wersji folderu. Zapis zmienionego pliku tworzy kolejną wersję folderu. Jeśli ktoś wcześniej zapisze nową wersję, edytor pozwala przejść do aktualnej wersji.
+- Edytor kodu z numerami linii, kolorowaniem składni i ligaturami Fira Code. **Edit** działa dla fragmentów kodu i plików tekstowych UTF-8 do 256 KiB, zarówno osobnych, jak i wewnątrz folderów. Zapis aktualnej wersji tworzy kolejną wersję zasobu. Przy równoległym zapisie edytor informuje o konflikcie i pozwala przejść do aktualnej wersji.
 - Panel administratora pod `/admin` pozwala utworzyć pokój, zmienić czas przechowywania i zamknąć pokój z natychmiastowym usunięciem danych.
 
 Pokój pozostaje dostępny po rozłączeniu ostatniego uczestnika. Domyślnie wygasa po 24 godzinach bez osób online. Pole retencji w panelu przyjmuje wartości od 1 do 8760 godzin. Zamknięcie lub wygaśnięcie usuwa z bazy wiadomości, fragmenty kodu, pliki, wersje i sesje uczestników. Pobrane kopie pozostają na urządzeniach uczestników. Pełne puste katalogi można przesłać przez przeciągnięcie folderu lub systemowy wybór katalogu w przeglądarkach obsługujących File System Access API. Zastępczy selektor folderu opiera się na liście plików, więc pomija puste katalogi.
@@ -39,7 +39,7 @@ Otwórz główny plik `.tex` projektu albo kompletny fragment LaTeX w galerii za
 
 Obraz TeX Live zawiera m.in. AMS, `graphicx`, TikZ, pakiety naukowe, polskie wzorce dzielenia wyrazów i BibTeX. Własne pliki `.sty`, `.cls`, `.bib` oraz grafiki dodaj do folderu. Dostępne są pakiety z obrazu i z folderu. Usługa kompiluje bez dostępu do sieci, poleceń powłoki i wolumenu pokoi. Limit to 35 sekund na kompilację i 16 MiB na PDF. Bibliografie uruchamiane przez Biber oraz pakiety wymagające uruchamiania poleceń powłoki są poza obsługiwanym zestawem.
 
-Przesłane pliki PDF można przeglądać bezpośrednio w galerii. Gdy w tym samym katalogu i wersji folderu znajdują się pliki o tej samej nazwie z rozszerzeniami `.tex` i `.pdf`, przycisk **View PDF** otwiera przesłany dokument. Kompilacja źródła przez **Render PDF** wymaga usługi `tex` ze stacka Dockera.
+Przesłane pliki PDF można przeglądać bezpośrednio w galerii, przełączać strony i zmieniać powiększenie od 25% do 250%. Kliknięcie procentu przywraca dopasowanie do szerokości. Gdy w tym samym katalogu i wersji folderu znajdują się pliki o tej samej nazwie z rozszerzeniami `.tex` i `.pdf`, przycisk **View PDF** otwiera przesłany dokument. Kompilacja źródła przez **Render PDF** wymaga usługi `tex` ze stacka Dockera.
 
 ## Nginx Proxy Manager
 

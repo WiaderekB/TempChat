@@ -34,6 +34,11 @@ def make_packet(name, kind, entries, mode=None, note=''):
     return len(header).to_bytes(4, 'big') + header + b''.join(data for data in entries.values() if data is not None)
 
 
+def make_share(text, *packets):
+    header = json.dumps({'text': text, 'sizes': [len(packet) for packet in packets]}).encode()
+    return len(header).to_bytes(4, 'big') + header + b''.join(packets)
+
+
 class Client:
     def __init__(self, app):
         self.app = app
@@ -166,6 +171,49 @@ class TempChatTest(unittest.TestCase):
         history = self.call(self.ala, 200, 'GET', url.rstrip('/'))['history']
         self.assertEqual(history[0]['size'], len(b'\0replacementkeepnotes'))
 
+    def test_file_and_snippet_share_the_versioned_edit_api(self):
+        base = self.room()
+        file = self.save(make_packet('program.txt', 'file', {'program.txt': b'first\r\nold\r\n'}))
+        snippet = self.call(self.ala, 200, 'POST', base + 'messages',
+                            {'kind': 'code', 'title': 'Example', 'body': 'print(1)', 'lang': 'python'})
+        for item, edit, expected in (
+            (file, {'text': 'first\nnew\n'}, b'first\r\nnew\r\n'),
+            (snippet, {'text': 'console.log(2)', 'lang': 'js'}, b'console.log(2)'),
+        ):
+            with self.subTest(asset=item['asset']):
+                url = base + f'assets/{item["asset"]}'
+                self.assertTrue(self.call(self.ala, 200, 'GET', url + '/1/preview')['editable'])
+                saved = self.call(self.ala, 200, 'POST', url + '/1/edit', {**edit, 'note': 'Edited'})
+                self.assertEqual(saved['num'], 2)
+                self.assertEqual(self.call(self.ala, 200, 'GET', url + '/2/download'), expected)
+                self.assertEqual(self.call(self.ala, 200, 'POST', url + '/2/edit', edit)['num'], 2)
+                self.call(self.ala, 409, 'POST', url + '/1/edit', edit)
+
+    def test_chat_share_stores_files_and_caption_in_one_message(self):
+        base = self.room()
+        file = make_packet('notes.txt', 'file', {'notes.txt': b'original'})
+        self.save(file)
+        project = make_packet('Project', 'folder', {'sub/a.txt': b'nested', 'empty': None})
+        upload = make_share('**Check both**', file, project)
+        self.call(self.ola, 401, 'POST', base + 'share', upload)
+        saved = self.call(self.ala, 200, 'POST', base + 'share', upload)['attachments']
+        self.assertEqual([(item['kind'], item['name']) for item in saved],
+                         [('file', 'notes (2).txt'), ('folder', 'Project')])
+        chat = self.call(self.ala, 200, 'GET', base + 'messages')
+        self.assertEqual(len(chat), 2)
+        self.assertEqual((chat[-1]['kind'], chat[-1]['body'], chat[-1]['attachments']),
+                         ('share', '**Check both**', saved))
+        url = base + f'assets/{saved[1]["asset"]}/1/download?path=sub/a.txt'
+        self.assertEqual(self.call(self.ala, 200, 'GET', url), b'nested')
+        extra = make_packet('second.txt', 'file', {'second.txt': b'new'})
+        with patch('assets.ROOM_BYTES', len(b'originalnested') + len(b'new')):
+            last = make_packet('large.txt', 'file', {'large.txt': b'over capacity'})
+            self.call(self.ala, 413, 'POST', base + 'share', make_share('', extra, last))
+        self.assertEqual(len(self.call(self.ala, 200, 'GET', base + 'messages')), 2)
+        catalog = self.call(self.ala, 200, 'GET', base + 'catalog')
+        self.assertNotIn('second.txt', {item['name'] for item in catalog['files']})
+        self.call(self.ala, 200, 'POST', base + 'share', make_share('', extra))
+
     def test_latex_compiles_the_selected_snapshot_with_its_dependencies(self):
         base = self.room()
         draft = b'first version'
@@ -292,7 +340,7 @@ class TempChatTest(unittest.TestCase):
         self.assertIn('-print(1)\n+console.log(2)', diff)
         self.assertEqual(self.call(self.ala, 200, 'POST', url + '/1/restore')['num'], 3)
         restored = self.call(self.ala, 200, 'GET', url + '/3/preview')
-        self.assertEqual(restored, {'type': 'text', 'text': 'print(1)\n', 'lang': 'python'})
+        self.assertEqual(restored, {'type': 'text', 'text': 'print(1)\n', 'lang': 'python', 'editable': True})
         catalog = self.call(self.ala, 200, 'GET', base + 'catalog')
         self.assertEqual(catalog['files'], [])
         self.assertEqual([(row['name'], row['num']) for row in catalog['codes']], [('Pierwsza funkcja', 3)])
@@ -304,7 +352,7 @@ class TempChatTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory, 'rooms.sqlite3')
             schema = Path(__file__).resolve().parents[1].joinpath('schema.sql').read_text()
-            legacy = schema.replace(", lang TEXT NOT NULL DEFAULT ''", '').replace(', sender TEXT', '')
+            legacy = schema.replace(", lang TEXT NOT NULL DEFAULT ''", '').replace(', sender TEXT, attachments TEXT', '')
             now = int(time.time())
             with closing(sqlite3.connect(database)) as db, db:
                 db.executescript(legacy)
@@ -331,7 +379,7 @@ class TempChatTest(unittest.TestCase):
         self.assertEqual([item['num'] for item in history], [2, 1])
         self.assertEqual(history[0]['note'], 'Nowa liczba')
         preview = self.call(self.ala, 200, 'GET', url + '/2/preview')
-        self.assertEqual(preview, {'type': 'text', 'text': 'print(2)\n'})
+        self.assertEqual(preview, {'type': 'text', 'text': 'print(2)\n', 'editable': True})
         diff = self.call(self.ala, 200, 'GET', url + '/2/changes?path=program.py')['text']
         self.assertIn('-print(1)\n+print(2)', diff)
         restored = self.call(self.ala, 200, 'POST', url + '/1/restore')
@@ -452,7 +500,7 @@ class TempChatTest(unittest.TestCase):
         data = source.encode()
         uploaded = self.save(make_packet('notes.tex', 'file', {'notes.tex': data}))
         self.assertEqual(self.call(self.ala, 200, 'GET', base + f'assets/{uploaded["asset"]}/1/preview'),
-                         {'type': 'text', 'text': source})
+                         {'type': 'text', 'text': source, 'editable': True})
         for title, expected in [('Notes', 'Notes.tex'), ('Outline.TeX', 'Outline.TeX')]:
             with self.subTest(title=title):
                 fragment = self.call(self.ala, 200, 'POST', base + 'messages',

@@ -1,9 +1,10 @@
-import { $, element, link, request, choose, notify, languageLabel, formatBytes, assetIcons, run } from './ui.js';
+import { $, element, link, request, choose, notify, languageLabel, formatBytes, glyph, run } from './ui.js';
 import { assetBrowser, assetHash } from './asset-view.js';
 
 const MAX_ENTRIES = 10000;
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_HEADER = 4 * 1024 * 1024;
+const MAX_ATTACHMENTS = 12;
 const GALLERY_PAGE = 60;
 const kindLabels = { folder: 'Folder', file: 'File', code: 'Code' };
 
@@ -59,6 +60,14 @@ function readDrop(transfer) {
   }));
 }
 
+function framedBody(info, parts) {
+  const header = new TextEncoder().encode(JSON.stringify(info));
+  if (header.length > MAX_HEADER) throw new Error('The list of paths is too long.');
+  const prefix = new ArrayBuffer(4);
+  new DataView(prefix).setUint32(0, header.length);
+  return new Blob([prefix, header, ...parts], { type: 'application/octet-stream' });
+}
+
 function packetBody(packet, mode, note) {
   const files = packet.entries.map(({ file }) => file).filter(Boolean);
   if (packet.entries.length > MAX_ENTRIES || files.reduce((sum, file) => sum + file.size, 0) > MAX_BYTES) {
@@ -68,11 +77,61 @@ function packetBody(packet, mode, note) {
     name: packet.name, kind: packet.kind, mode, note,
     entries: packet.entries.map(({ path, file }) => ({ path, size: file?.size ?? null })),
   };
-  const header = new TextEncoder().encode(JSON.stringify(info));
-  if (header.length > MAX_HEADER) throw new Error('The list of paths is too long.');
-  const prefix = new ArrayBuffer(4);
-  new DataView(prefix).setUint32(0, header.length);
-  return new Blob([prefix, header, ...files], { type: 'application/octet-stream' });
+  return framedBody(info, files);
+}
+
+export function attachmentSize(packet) {
+  return packet.entries.reduce((total, { file }) => total + (file?.size ?? 0), 0);
+}
+
+export function shareAttachments(base, text, packets) {
+  const bodies = packets.map((packet) => packetBody(packet));
+  const batch = framedBody({ text, sizes: bodies.map(({ size }) => size) }, bodies);
+  if (batch.size > MAX_BYTES + MAX_HEADER + 4) throw new Error('The attachments exceed the upload limit.');
+  return request(base + 'share', { method: 'POST', data: batch });
+}
+
+export function limitAttachments(packets) {
+  if (packets.length > MAX_ATTACHMENTS || packets.reduce((total, packet) => total + attachmentSize(packet), 0) > MAX_BYTES) {
+    throw new Error('Attach up to 12 files or folders, with a total of 64 MiB.');
+  }
+  return packets;
+}
+
+export function uploadPickers(fileInput, folderInput, accept) {
+  for (const [input, read] of [[fileInput, filePackets], [folderInput, folderPacket]]) {
+    input.addEventListener('change', () => {
+      const packets = read(input.files);
+      input.value = '';
+      void accept(() => packets);
+    });
+  }
+  return {
+    files: () => fileInput.click(),
+    folder() {
+      if (!window.showDirectoryPicker) {
+        folderInput.click();
+        return;
+      }
+      return accept(async () => {
+        const directory = await window.showDirectoryPicker();
+        const entries = [];
+        await collectFolder(directory, entries);
+        return [{ name: directory.name, kind: 'folder', entries }];
+      });
+    },
+  };
+}
+
+export function assetCover(kind, name) {
+  const ext = name.split('.').at(-1).toLowerCase();
+  const variant = kind !== 'file' ? kind : /^(png|jpe?g|webp|gif|avif)$/.test(ext) ? 'image'
+    : /^(csv|tsv|xlsx?)$/.test(ext) ? 'table' : ext === 'pdf' ? 'pdf'
+    : /^(tex|java|js|ts|py|json|html|css|sh|c|cpp|sql)$/.test(ext) ? 'code' : 'file';
+  const cover = element('span', '', 'asset-cover cover-' + variant);
+  cover.setAttribute('aria-hidden', 'true');
+  cover.append(glyph(variant === 'pdf' ? 'file' : variant));
+  return cover;
 }
 
 export function resources(base, afterUpload) {
@@ -161,14 +220,12 @@ export function resources(base, afterUpload) {
       card.setAttribute('aria-label', (item.path ? item.name + '/' + item.path : item.name) + ' · v' + item.num);
       const content = element('span', '', 'gallery-card-body');
       const top = element('span', '', 'gallery-card-top');
-      const icon = element('span', assetIcons[item.entry_kind ?? item.kind], 'gallery-icon');
-      icon.setAttribute('aria-hidden', 'true');
       const name = item.path ? item.path.split('/').at(-1) : item.name;
       top.append(element('span', name, 'gallery-card-title'), element('span', 'v' + item.num, 'pill'));
       const type = item.kind === 'code' ? languageLabel(item.lang) : formatBytes(item.size);
       const location = item.path ? item.name + '/' + item.path : [kindLabels[item.kind], type, item.author].join(' · ');
       content.append(top, element('span', location, 'gallery-card-meta'));
-      card.append(icon, content);
+      card.append(assetCover(item.entry_kind ?? item.kind, name), content);
       row.append(card);
       fragment.append(row);
     }
@@ -190,7 +247,7 @@ export function resources(base, afterUpload) {
     notes.id = 'revision-note';
     notes.maxLength = 200;
     if (existing?.kind === packet.kind) {
-      options.unshift(['version', 'Add new version', 'primary']);
+      options.unshift(['version', 'Replace', 'primary']);
       const label = element('label', 'Version note (optional)');
       label.htmlFor = notes.id;
       description.append(label, notes);
@@ -247,27 +304,9 @@ export function resources(base, afterUpload) {
     if (event.dataTransfer.types.includes('Files')) event.preventDefault();
   });
 
-  $('pick-file').addEventListener('click', () => $('file-input').click());
-  $('pick-folder').addEventListener('click', () => {
-    if (!window.showDirectoryPicker) {
-      $('folder-input').click();
-      return;
-    }
-    queue(async () => {
-      const directory = await window.showDirectoryPicker();
-      const entries = [];
-      await collectFolder(directory, entries);
-      return [{ name: directory.name, kind: 'folder', entries }];
-    });
-  });
-  for (const [id, read] of [['file-input', filePackets], ['folder-input', folderPacket]]) {
-    const input = $(id);
-    input.addEventListener('change', () => {
-      const packets = read(input.files);
-      input.value = '';
-      queue(() => packets);
-    });
-  }
+  const pick = uploadPickers($('file-input'), $('folder-input'), queue);
+  $('pick-file').addEventListener('click', pick.files);
+  $('pick-folder').addEventListener('click', pick.folder);
   for (const [id, filter] of [['all-tab', 'all'], ['files-tab', 'files'], ['snippets-tab', 'codes']]) {
     $(id).addEventListener('click', () => { tab = filter; render(); });
   }

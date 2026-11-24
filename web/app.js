@@ -1,6 +1,6 @@
 import { $, element, button, link, request, run, formAction, notify, showError, present, choose,
-  copyText, dateTime, codeBlock, selectLanguage, snippetPicker } from './ui.js';
-import { resources } from './files.js';
+  copyText, dateTime, codeBlock, selectLanguage, snippetPicker, iconControl, formatBytes } from './ui.js';
+import { resources, uploadPickers, assetCover, attachmentSize, limitAttachments, shareAttachments } from './files.js';
 import { markdownHtml } from './markdown.mjs';
 
 const viewIds = ['join-view', 'room-view', 'login-view', 'admin-view'];
@@ -52,6 +52,10 @@ function activateRoom(code, initial) {
   const input = $('message-text');
   const form = $('message-form');
   const submitMessage = form.querySelector('button[type=submit]');
+  const attachMenu = $('attach-menu');
+  const attachToggle = $('attach-toggle');
+  const pending = $('pending-attachments');
+  const codeModeControl = $('code-mode');
   const snippetName = $('snippet-title');
   const language = $('language');
   const chat = $('chat-screen');
@@ -62,6 +66,9 @@ function activateRoom(code, initial) {
   const settingsFields = { title: $('manage-name'), hours: $('manage-hours') };
   const assets = resources(base, refreshSoon);
   let mode = 'text';
+  let attachments = [];
+  let picking = false;
+  let sendingAttachments = false;
   let last = 0;
   let first = 0;
   let catalogAt = null;
@@ -141,34 +148,51 @@ function activateRoom(code, initial) {
         heading.title = 'Open full version';
       }
       bubble.append(codeBlock(data.body, data.lang, { heading }));
-    } else if (data.kind === 'asset') {
-      const icon = data.asset_kind === 'folder' ? '▱ ' : '▤ ';
-      bubble.append(button(icon + data.name + ' · v' + data.num,
-        () => assets.openAsset(data.asset, data.num, data.name), 'msg-asset'));
-      if (data.body) bubble.append(element('p', data.body, 'msg-text muted attachment-note'));
-    } else {
-      const text = element('div', '', 'msg-text markdown-message');
-      const excerpt = data.body.split('\n').slice(0, 12).join('\n').slice(0, 900).trimEnd();
-      const shortened = excerpt.length < data.body.trimEnd().length;
-      const preview = markdownHtml(shortened ? excerpt : data.body);
-      text.innerHTML = preview;
-      bubble.append(text);
-      if (shortened) {
-        text.id = 'message-' + data.id;
-        const toggle = button('Show full message', () => {
-          const expand = toggle.getAttribute('aria-expanded') === 'false';
-          toggle.setAttribute('aria-expanded', String(expand));
-          toggle.textContent = expand ? 'Show less' : 'Show full message';
-          text.innerHTML = expand ? markdownHtml(data.body) : preview;
-        }, 'message-summary');
-        toggle.setAttribute('aria-expanded', 'false');
-        toggle.setAttribute('aria-controls', text.id);
-        bubble.append(toggle);
+    } else if (data.kind === 'asset' || data.kind === 'share') {
+      if (data.kind === 'share' && data.body.trim()) appendMessageText(bubble, data);
+      const cards = element('div', '', 'chat-attachments');
+      for (const item of data.attachments ?? [{ ...data, kind: data.asset_kind }]) {
+        const card = button('', () => assets.openAsset(item.asset, item.num, item.name), 'chat-attachment');
+        card.append(assetCover(item.kind, item.name), attachmentLabel(item));
+        cards.append(card);
       }
+      bubble.append(cards);
+      if (data.kind === 'asset' && data.body) bubble.append(element('p', data.body, 'msg-text muted attachment-note'));
+    } else {
+      appendMessageText(bubble, data);
     }
     content.append(meta, bubble);
     row.append(content);
     return row;
+  }
+
+  function appendMessageText(bubble, data) {
+    const text = element('div', '', 'msg-text markdown-message');
+    const excerpt = data.body.split('\n').slice(0, 12).join('\n').slice(0, 900).trimEnd();
+    const shortened = excerpt.length < data.body.trimEnd().length;
+    const preview = markdownHtml(shortened ? excerpt : data.body);
+    text.innerHTML = preview;
+    bubble.append(text);
+    if (shortened) {
+      text.id = 'message-' + data.id;
+      const toggle = button('Show full message', () => {
+        const expand = toggle.getAttribute('aria-expanded') === 'false';
+        toggle.setAttribute('aria-expanded', String(expand));
+        toggle.textContent = expand ? 'Show less' : 'Show full message';
+        text.innerHTML = expand ? markdownHtml(data.body) : preview;
+      }, 'message-summary');
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('aria-controls', text.id);
+      bubble.append(toggle);
+    }
+  }
+
+  function attachmentLabel({ name, kind, size, num }) {
+    const label = element('span', '', 'attachment-label');
+    const metadata = [kind === 'folder' ? 'Folder' : 'File',
+      typeof size === 'number' ? formatBytes(size) : '', num ? 'v' + num : ''].filter(Boolean);
+    label.append(element('strong', name), element('span', metadata.join(' · '), 'attachment-meta'));
+    return label;
   }
 
   function renderMessages(batch, prepend = false) {
@@ -371,7 +395,7 @@ function activateRoom(code, initial) {
   }
 
   function updateSubmitLabel() {
-    const label = mode === 'code' && picker.selected ? 'Save version' : 'Send';
+    const label = mode === 'code' && picker.selected ? 'Save' : 'Send';
     submitMessage.textContent = label;
     submitMessage.title = label + ' (Ctrl or Command + Enter)';
   }
@@ -381,17 +405,81 @@ function activateRoom(code, initial) {
     const codeMode = mode === 'code';
     $('code-mode').setAttribute('aria-pressed', String(codeMode));
     $('code-fields').hidden = !codeMode;
+    attachMenu.hidden = codeMode;
     input.classList.toggle('code-mode', codeMode);
-    input.placeholder = codeMode ? 'Paste or type code…' : 'Write a message…';
+    updateDraft();
     input.spellcheck = !codeMode;
     if (!codeMode) picker.close();
     updateSubmitLabel();
     focus?.focus();
   }
-  $('code-mode').addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
+  iconControl(codeModeControl, 'code', 'Code mode');
+  iconControl(attachToggle, 'attach', 'Attach files or folder');
+  attachToggle.addEventListener('click', (event) => {
+    if (picking || sendingAttachments) event.preventDefault();
+  });
+  iconControl($('attach-files'), 'file', 'Files', true);
+  iconControl($('attach-folder'), 'folder', 'Folder', true);
+  codeModeControl.addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
+  const uploads = uploadPickers($('chat-file-input'), $('chat-folder-input'), async (read) => {
+    if (picking || sendingAttachments || mode === 'code') return;
+    picking = true;
+    updateDraft();
+    try {
+      const selected = await read();
+      attachments = limitAttachments([...attachments, ...selected]);
+      if (selected.length) input.focus();
+    } catch (error) {
+      if (error.name !== 'AbortError') notify(error.message, true);
+    } finally {
+      picking = false;
+      updateDraft();
+    }
+  });
+  for (const [id, open] of [['attach-files', uploads.files], ['attach-folder', uploads.folder]]) {
+    $(id).addEventListener('click', () => {
+      attachMenu.open = false;
+      open();
+    });
+  }
+  document.addEventListener('pointerdown', (event) => {
+    if (attachMenu.open && !attachMenu.contains(event.target)) attachMenu.open = false;
+  });
+  attachMenu.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && attachMenu.open) {
+      event.stopPropagation();
+      attachMenu.open = false;
+      attachToggle.focus();
+    }
+  });
+
+  function updateDraft() {
+    input.required = !attachments.length;
+    input.placeholder = mode === 'code' ? 'Paste or type code…'
+      : attachments.length ? 'Add a message…' : 'Write a message…';
+    codeModeControl.disabled = Boolean(attachments.length) || picking;
+    attachToggle.setAttribute('aria-disabled', String(picking || sendingAttachments));
+    pending.hidden = !attachments.length;
+    pending.replaceChildren(...attachments.map((packet) => {
+      const tile = element('li', '', 'pending-attachment');
+      const remove = iconControl(button('', () => {
+        attachments = attachments.filter((item) => item !== packet);
+        updateDraft();
+        input.focus();
+      }, 'quiet'), 'close', 'Remove ' + packet.name);
+      remove.disabled = sendingAttachments;
+      tile.append(assetCover(packet.kind, packet.name),
+        attachmentLabel({ ...packet, size: attachmentSize(packet) }), remove);
+      return tile;
+    }));
+  }
   $('add-code').addEventListener('click', () => {
     location.hash = '#chat';
     showScreen();
+    if (attachments.length || picking) {
+      notify('Send or remove the attachments before switching to code.', true);
+      return;
+    }
     picker.reset();
     setMode('code', snippetName);
   });
@@ -406,6 +494,7 @@ function activateRoom(code, initial) {
     }
   });
   formAction(form, async () => {
+    if (picking) throw new Error('Wait for the folder to finish loading.');
     const sent = input.value;
     const title = snippetName.value;
     const target = picker.selected;
@@ -416,7 +505,19 @@ function activateRoom(code, initial) {
       if (target) data.asset = target.id;
       else data.title = title;
     }
-    await request(base + 'messages', { method: 'POST', data });
+    if (attachments.length) {
+      sendingAttachments = true;
+      updateDraft();
+      try {
+        await shareAttachments(base, sent, attachments);
+        attachments = [];
+      } finally {
+        sendingAttachments = false;
+        updateDraft();
+      }
+    } else {
+      await request(base + 'messages', { method: 'POST', data });
+    }
     if (input.value === sent) {
       input.value = '';
       if (kind === 'code' && picker.selected === target && snippetName.value === title) {

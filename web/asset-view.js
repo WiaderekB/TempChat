@@ -1,5 +1,5 @@
 import { $, element, button, link, request, choose, notify, copyText, dateTime, formatBytes,
-  formAction, assetIcons, highlightSource, languageLabel, selectLanguage } from './ui.js';
+  formAction, assetIcons, highlightSource, languageLabel, selectLanguage, iconControl } from './ui.js';
 import { markdownHtml } from './markdown.mjs';
 
 const order = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
@@ -438,9 +438,8 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       } else {
         route.path = '';
       }
-      if (route.mode === 'edit' && asset.kind !== 'code' && (
-        !route.path || index?.nodes.get(route.path)?.dir || route.version !== asset.history[0].num
-      )) route.mode = 'preview';
+      if (route.mode === 'edit' && (route.version !== asset.history[0].num ||
+        (folder && index.nodes.get(route.path)?.dir))) route.mode = 'preview';
       const canonical = assetHash(route);
       if (canonical !== activeHash) {
         activeHash = canonical;
@@ -486,9 +485,6 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     }
     const actions = $('asset-actions');
     actions.replaceChildren(link(asset.kind === 'folder' ? 'Download ZIP' : 'Download', prefix + '/download'));
-    if (asset.kind === 'code' && route.mode !== 'edit') {
-      actions.append(link('New version', assetHash({ ...route, mode: 'edit' }), 'button'));
-    }
     if (route.version !== asset.history[0].num) actions.append(button('Restore', async () => {
       const confirmed = await choose('Restore version', 'A copy of v' + route.version + ' will become the latest version.',
         [['restore', 'Restore version', 'primary']]);
@@ -582,9 +578,9 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const ticket = generation;
     uploading = true;
     try {
-      const confirmed = await choose(singleReplacement ? 'Add a new version of this file?' : 'Commit files to this folder?',
+      const confirmed = await choose(singleReplacement ? 'Replace this file?' : 'Commit files to this folder?',
         'This will create a new version of ' + asset.name + '.',
-        [['commit', singleReplacement ? 'Add new version' : 'Commit files', 'primary']], list);
+        [['commit', singleReplacement ? 'Replace file' : 'Commit files', 'primary']], list);
       if (!confirmed || ticket !== generation) return;
       const saved = await uploadFiles(prefix, asset.name, entries);
       afterWrite();
@@ -693,9 +689,12 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
         : link(segment, assetHash({ ...route, path: parent, mode: route.mode === 'edit' ? 'preview' : route.mode }), 'path-link'));
     }
     const node = index?.nodes.get(route.path);
-    if (route.path) pathActions.append(button('Copy path', () => copyText(route.path, 'Path copied.'), 'quiet'));
-    if (node && !node.dir && node.state !== 'removed') {
-      pathActions.append(link('Download file', prefix + '/download' + queryPath(route.path), 'button quiet'));
+    if (route.mode !== 'edit' && route.path) {
+      pathActions.append(iconControl(button('', () => copyText(route.path, 'Path copied.'), 'quiet'), 'copy', 'Copy path'));
+      if (node && !node.dir && node.state !== 'removed') {
+        pathActions.append(iconControl(link('', prefix + '/download' + queryPath(route.path), 'button quiet'),
+          'download', 'Download file'));
+      }
     }
   }
 
@@ -746,13 +745,12 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     }
 
     content.replaceChildren(element('p', 'Loading file…', 'asset-empty'));
-    const editingFile = route.mode === 'edit' && asset.kind === 'folder';
-    const preview = await request(prefix + (editingFile ? '/edit' : '/preview') + queryPath(route.path));
+    const preview = await request(prefix + (route.mode === 'edit' ? '/edit' : '/preview') + queryPath(route.path));
     if (ticket !== generation) return;
     const filename = node?.name ?? asset.name;
     const extension = filename.includes('.') ? filename.split('.').at(-1).toLowerCase() : '';
     if (route.mode === 'edit') {
-      renderEditor(preview, ticket, editingFile ? extension : undefined);
+      renderEditor(preview, ticket, extension);
       return;
     }
     if (preview.type === 'pdf') {
@@ -786,7 +784,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const label = preview.type === 'zip' ? 'ZIP contents' : table ? extension.toUpperCase() + ' · ' + preview.rows.length + ' rows'
       : sourceLabel(preview.text, markdown ? 'Markdown' : languageLabel(language));
     if (preview.editable && route.version === asset.history[0].num) {
-      actions.push(link('Edit file', assetHash({ ...route, mode: 'edit' })));
+      actions.push(iconControl(link('', assetHash({ ...route, mode: 'edit' })), 'edit', 'Edit', true));
     }
     if (preview.pdf_path) {
       actions.push(link('View PDF', assetHash({ ...route, path: preview.pdf_path })));
@@ -878,7 +876,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     } else {
       content.replaceChildren(body);
     }
-    if (!binary) actions.push(button('Copy', () => copyText(preview.text, 'Copied.'), 'quiet'));
+    if (!binary) actions.push(iconControl(button('', () => copyText(preview.text, 'Copied.'), 'quiet'), 'copy', 'Copy content'));
     setSourceInfo(label, ...actions);
 
     function renderFormatted() {
@@ -912,10 +910,9 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
 
   function renderEditor(preview, ticket, fileLanguage) {
     const { asset, route, prefix } = active;
-    const editingFile = asset.kind === 'folder';
     const form = element('form', '', 'asset-editor');
     let language;
-    if (!editingFile) {
+    if (asset.kind === 'code') {
       language = $('language').cloneNode(true);
       language.id = 'version-language';
       language.setAttribute('aria-label', 'Language');
@@ -926,24 +923,22 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
     const footer = element('footer', '', 'editor-footer');
     const note = element('input', '', 'editor-note');
     note.maxLength = 200;
-    note.placeholder = 'Change note (optional)';
+    note.placeholder = 'Optional change note';
     note.setAttribute('aria-label', note.placeholder);
     const actions = element('div', '', 'editor-actions');
-    const submit = element('button', 'Commit changes', 'primary');
+    const submit = iconControl(element('button', '', 'primary'), 'check', 'Save', true);
     submit.type = 'submit';
     const error = element('div', '', 'error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
-    actions.append(link('Cancel', assetHash({ ...route, mode: 'preview' }), 'button quiet'), submit);
+    actions.append(iconControl(link('', assetHash({ ...route, mode: 'preview' }), 'button quiet'), 'close', 'Cancel editing'), submit);
     footer.append(error, note, position, actions);
     form.append(grid, footer);
     content.replaceChildren(form);
     code.focus();
     formAction(form, async () => {
-      const endpoint = editingFile ? prefix + '/edit' + queryPath(route.path) : base + 'messages';
-      const data = editingFile ? { text: code.value, note: note.value }
-        : { kind: 'code', asset: asset.id, body: code.value, lang: language.value, note: note.value };
-      const saved = await request(endpoint, {
+      const data = { text: code.value, note: note.value, ...(language ? { lang: language.value } : {}) };
+      const saved = await request(prefix + '/edit' + queryPath(route.path), {
         method: 'POST',
         data,
       });
@@ -951,7 +946,7 @@ export function assetBrowser(base, afterWrite, uploadFiles) {
       if (ticket === generation) go({ version: saved.num, mode: 'preview' });
     }, (message, _isError, failure) => {
       error.replaceChildren(element('p', message));
-      if (editingFile && failure?.status === 409) {
+      if (failure?.status === 409) {
         error.append(button('Open latest version', async () => {
           assetCache = await request(base + 'assets/' + asset.id);
           if (ticket === generation) go({ version: assetCache.history[0].num, mode: 'preview' });

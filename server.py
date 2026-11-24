@@ -100,6 +100,7 @@ class App:
                 db.execute('BEGIN IMMEDIATE')
                 for table, name, declaration in (
                     ('messages', 'sender', 'TEXT'),
+                    ('messages', 'attachments', 'TEXT'),
                     ('versions', 'lang', "TEXT NOT NULL DEFAULT ''"),
                 ):
                     columns = {column['name'] for column in db.execute(f'PRAGMA table_info({table})')}
@@ -207,14 +208,17 @@ class App:
             require(match,404,'Not found.')
             room, action = match.groups()
             folder_upload = re.fullmatch(r'assets/(\d+)/(\d+)/files', action)
-            if method == 'POST' and (action == 'assets' or folder_upload):
+            if method == 'POST' and (action in ('assets', 'share') or folder_upload):
                 self.member(db,req,room,now)
                 require(self.uploads.acquire(blocking=False),503,'Other uploads are in progress. Try again shortly.')
                 try:
-                    packet = assets.unpack(req.stream,req.length)
+                    shared = action == 'share'
+                    packet = (assets.unpack_share if shared else assets.unpack)(req.stream, req.length)
                     db.execute('BEGIN IMMEDIATE')
                     saved_at = int(time.time())
                     member = self.member(db,req,room,saved_at)
+                    if shared:
+                        return assets.share(db, room, member, saved_at, *packet)
                     if folder_upload:
                         row, manifest = assets.snapshot(db, room, *folder_upload.groups())
                         return assets.update_folder(db, room, row, manifest, member, saved_at, packet)
@@ -302,11 +306,16 @@ class App:
 
     @staticmethod
     def messages(db,req,room,token):
-        query = ('SELECT m.id,m.room,m.kind,m.author,m.body,m.lang,m.asset,m.num,m.created,a.name,a.kind AS asset_kind,'
+        query = ('SELECT m.id,m.room,m.kind,m.author,m.body,m.lang,m.asset,m.num,m.created,m.attachments,a.name,a.kind AS asset_kind,'
                  'coalesce(m.sender=?,0) AS mine FROM messages m LEFT JOIN assets a ON a.id=m.asset WHERE m.room=?')
         if req.arg('after'):
-            return rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 80',(token,room,int(req.arg('after')))))
-        return rows(db.execute(query+' AND m.id<? ORDER BY m.id DESC LIMIT 80',(token,room,int(req.arg('before',str(2**63-1))))))[::-1]
+            batch = rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 80',(token,room,int(req.arg('after')))))
+        else:
+            batch = rows(db.execute(query+' AND m.id<? ORDER BY m.id DESC LIMIT 80',(token,room,int(req.arg('before',str(2**63-1))))))[::-1]
+        for item in batch:
+            if attachments := item.pop('attachments'):
+                item['attachments'] = json.loads(attachments)
+        return batch
 
     def admin(self,db,req,now):
         action = req.path.removeprefix('/api/admin/')
@@ -373,14 +382,17 @@ class App:
             require(req.method == 'POST', 405, 'Method not allowed.')
             return self.render_latex(db, req, room, row, manifest, path)
         if op == 'edit':
-            require(row['kind'] == 'folder' and manifest.get(path), 404, 'File not found.')
+            path = path or (next(iter(manifest)) if row['kind'] != 'folder' else '')
+            require(manifest.get(path), 404, 'File not found.')
+            require(not path.lower().endswith('.pdf'), 422, 'PDF files cannot be edited as text.')
             if req.method == 'POST':
                 data = req.body(6 * assets.EDIT_LIMIT + 4096)
-                return assets.edit_text(db, room, row, manifest, path, member, now, data.get('text'), data.get('note', ''))
+                return assets.edit_text(db, room, row, manifest, path, member, now,
+                                        data.get('text'), data.get('note', ''), data.get('lang', row['lang']))
             require(req.method == 'GET', 405, 'Method not allowed.')
             text = assets.editable_text(db, room, manifest[path])
             require(text is not None, 422, 'Only UTF-8 text files up to 256 KiB can be edited.')
-            return {'text': text}
+            return {'text': text, 'lang': row['lang']} if row['kind'] == 'code' else {'text': text}
         if op == 'restore' and req.method == 'POST':
             snippet = None
             if row['kind'] == 'code':
@@ -406,12 +418,13 @@ class App:
             require(manifest.get(path),404,'File not found.')
             if op == 'preview':
                 if row['kind'] == 'code':
-                    preview = {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}
+                    preview = {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(),
+                               'lang': row['lang'], 'editable': True}
                 else:
                     preview = assets.preview(db, room, manifest[path], path)
-                    if row['kind'] == 'folder' and (preview['type'] == 'text' or (
+                    if preview['type'] == 'text' or (
                         preview['type'] == 'table' and assets.editable_text(db, room, manifest[path]) is not None
-                    )):
+                    ):
                         preview['editable'] = True
                 if self.is_latex(row, path):
                     if self.tex_socket:

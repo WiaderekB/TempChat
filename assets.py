@@ -18,6 +18,7 @@ MIB = 1024 * 1024
 MAX_BYTES = 64 * MIB
 MAX_HEADER = 4 * MIB
 MAX_ENTRIES = 10000
+MAX_ATTACHMENTS = 12
 ROOM_BYTES = 512 * MIB
 CODE_PATH = 'fragment'
 EDIT_LIMIT = 256 * 1024
@@ -48,19 +49,24 @@ def path_name(value, nested=True):
     return value
 
 
-def unpack(stream, length):
+def upload_header(stream, length):
     require(4 <= length <= MAX_BYTES + MAX_HEADER + 4, 413, 'The upload limit is 64 MiB plus the file list.')
     header_len = int.from_bytes(stream.read(4), 'big')
     require(0 < header_len <= min(MAX_HEADER, length - 4), 400, 'Invalid upload header.')
     head = json.loads(stream.read(header_len))
     require(isinstance(head, dict), 400, 'Invalid upload metadata.')
+    return head, length - header_len - 4
+
+
+def unpack(stream, length):
+    head, remaining = upload_header(stream, length)
+    size_total = remaining
     name = path_name(head.get('name'), False)
     kind, items, mode = head.get('kind'), head.get('entries'), head.get('mode')
     require(kind in ('folder', 'file') and isinstance(items, list) and len(items) <= MAX_ENTRIES,
             400, 'Invalid file list. Uploads can contain up to 10,000 items.')
     require(kind == 'folder' or len(items) == 1, 400, 'Expected one file.')
     require(mode in (None, 'copy', 'version'), 400, 'Invalid save mode.')
-    remaining = length - header_len - 4
     require(remaining <= MAX_BYTES, 413, 'The upload limit is 64 MiB.')
     manifest, contents = {}, {}
     for item in items:
@@ -84,7 +90,20 @@ def unpack(stream, length):
     require(remaining == 0, 400, 'Invalid upload size.')
     note = head.get('note', '')
     require(isinstance(note, str) and len(note) <= 200, 400, 'The version note is too long.')
-    return name, kind, mode, note.strip(), manifest, contents, length - header_len - 4
+    return name, kind, mode, note.strip(), manifest, contents, size_total
+
+
+def unpack_share(stream, length):
+    head, remaining = upload_header(stream, length)
+    text, sizes = head.get('text'), head.get('sizes')
+    require(isinstance(text, str) and len(text) <= 64000, 400, 'A message can contain up to 64,000 characters.')
+    text.encode()
+    require(isinstance(sizes, list) and 0 < len(sizes) <= MAX_ATTACHMENTS and
+            all(type(size) is int and size >= 4 for size in sizes) and sum(sizes) == remaining,
+            400, 'Attach between 1 and 12 files or folders.')
+    packets = [unpack(stream, size) for size in sizes]
+    require(sum(packet[-1] for packet in packets) <= MAX_BYTES, 413, 'The attachment limit is 64 MiB.')
+    return text, packets
 
 
 def copy_name(db, room, name, kind):
@@ -115,7 +134,7 @@ def revision(db, room, asset, member, now, note, manifest, size, snippet=None, l
     return {'asset': asset, 'num': num}
 
 
-def save(db, room, member, now, packet):
+def save(db, room, member, now, packet, announce=True):
     name, kind, mode, note, manifest, contents, size = packet
     existing = db.execute('SELECT * FROM assets WHERE room=? AND name=?', (room, name)).fetchone()
     if existing and mode == 'copy':
@@ -129,7 +148,21 @@ def save(db, room, member, now, packet):
     else:
         asset = db.execute('INSERT INTO assets(room,name,kind) VALUES(?,?,?)', (room,name,kind)).lastrowid
     store_blobs(db, room, contents)
+    if not announce:
+        num = version(db, asset, member['nick'], now, note, manifest, size, '')
+        return {'asset': asset, 'num': num, 'name': name, 'kind': kind, 'size': size}
     return revision(db, room, asset, member, now, note, manifest, size)
+
+
+def share(db, room, member, now, text, packets):
+    attachments = []
+    for name, kind, _, _, manifest, blobs, size in packets:
+        packet = (name, kind, 'copy', '', manifest, blobs, size)
+        attachments.append(save(db, room, member, now, packet, announce=False))
+    db.execute("INSERT INTO messages(room,kind,author,body,lang,created,sender,attachments) "
+               "VALUES(?,'share',?,?,'',?,?,?)",
+               (room, member['nick'], text, now, member['token'], json.dumps(attachments, ensure_ascii=False)))
+    return {'attachments': attachments}
 
 
 def store_blobs(db, room, contents):
@@ -196,35 +229,40 @@ def editable_text(db, room, digest):
     return None
 
 
-def require_latest_folder(db, row):
-    require(row['kind'] == 'folder', 400, 'Select a folder.')
+def require_latest_version(db, row):
     latest = db.execute('SELECT max(num) FROM versions WHERE asset=?', (row['asset'],)).fetchone()[0]
-    require(row['num'] == latest, 409, 'A newer version of this folder exists. Open the latest version to continue.')
+    require(row['num'] == latest, 409, 'A newer version exists. Open the latest version to continue.')
 
 
-def edit_text(db, room, row, manifest, path, member, now, text, note):
-    require(row['kind'] == 'folder' and manifest.get(path), 404, 'File not found.')
-    require_latest_folder(db, row)
+def edit_text(db, room, row, manifest, path, member, now, text, note, lang):
+    require_latest_version(db, row)
     original = editable_text(db, room, manifest[path])
     require(original is not None, 422, 'Only UTF-8 text files up to 256 KiB can be edited.')
     require(isinstance(text, str) and '\0' not in text, 400, 'Enter valid UTF-8 text.')
     require(isinstance(note, str) and len(note) <= 200, 400, 'The version note is too long.')
-    if original.replace('\r\n', '\n').replace('\r', '\n') == text:
+    snippet = row['kind'] == 'code'
+    if snippet:
+        require(text.strip() and len(text) <= 64000, 400, 'Code must contain between 1 and 64,000 characters.')
+        require(isinstance(lang, str) and len(lang) <= 40, 400, 'Invalid language.')
+    if original.replace('\r\n', '\n').replace('\r', '\n') == text and (not snippet or lang == row['lang']):
         return {'asset': row['asset'], 'num': row['num']}
     if '\r\n' in original and '\n' not in original.replace('\r\n', ''):
         text = text.replace('\r\n', '\n').replace('\n', '\r\n')
     encoded = text.encode()
     require(len(encoded) <= EDIT_LIMIT, 413, 'A file edited here can contain up to 256 KiB.')
     size = row['size'] - len(original.encode()) + len(encoded)
-    require(size <= MAX_BYTES, 413, 'The folder would exceed the 64 MiB limit.')
+    require(size <= MAX_BYTES, 413, 'The asset would exceed the 64 MiB limit.')
     digest = hashlib.sha256(encoded).hexdigest()
     store_blobs(db, room, {digest: encoded})
     manifest[path] = digest
-    return revision(db, room, row['asset'], member, now, note.strip() or f'Edited {path}'[:200], manifest, size)
+    filename = row['name'] if snippet else path
+    return revision(db, room, row['asset'], member, now, note.strip() or f'Edited {filename}'[:200],
+                    manifest, size, text if snippet else None, lang if snippet else '')
 
 
 def update_folder(db, room, row, manifest, member, now, packet):
-    require_latest_folder(db, row)
+    require(row['kind'] == 'folder', 400, 'Select a folder.')
+    require_latest_version(db, row)
     name, kind, mode, note, updates, contents, size = packet
     require(name == row['name'] and kind == 'folder' and mode is None and updates and
             all(digest is not None for digest in updates.values()), 400, 'Drop files into a folder.')

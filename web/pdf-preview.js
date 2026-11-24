@@ -1,4 +1,4 @@
-import { element, link } from './ui.js';
+import { element, link, iconControl } from './ui.js';
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from './vendor/pdfjs/pdf.min.mjs';
 
 GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
@@ -8,11 +8,21 @@ export function pdfPreview({ blob, url }, filename) {
   const toolbar = element('div', '', 'pdf-actions');
   const status = element('span', 'Loading PDF preview…', 'muted');
   status.setAttribute('role', 'status');
-  const previous = element('button', 'Previous');
-  const next = element('button', 'Next');
+  const previous = iconControl(element('button', '', 'quiet'), 'left', 'Previous page');
+  const next = iconControl(element('button', '', 'quiet'), 'right', 'Next page');
   previous.type = next.type = 'button';
   previous.hidden = next.hidden = true;
-  toolbar.append(previous, status, next);
+  const pages = element('div', '', 'pdf-tools');
+  pages.append(previous, status, next);
+  const zoom = element('div', '', 'pdf-tools pdf-zoom');
+  const decrease = iconControl(element('button', '', 'quiet'), 'minus', 'Zoom out');
+  const increase = iconControl(element('button', '', 'quiet'), 'plus', 'Zoom in');
+  const reset = element('button', '', 'quiet');
+  decrease.type = increase.type = reset.type = 'button';
+  reset.title = 'Fit to width';
+  zoom.append(decrease, reset, increase);
+  zoom.hidden = true;
+  toolbar.append(pages, zoom);
   const objectUrl = blob ? URL.createObjectURL(blob) : undefined;
   if (objectUrl) {
     const download = link('Download PDF', objectUrl);
@@ -25,16 +35,32 @@ export function pdfPreview({ blob, url }, filename) {
   const canvas = element('canvas', '', 'pdf-page');
   canvas.setAttribute('role', 'img');
   canvas.hidden = true;
-  panel.append(toolbar, canvas);
+  const sheet = element('div', '', 'pdf-sheet');
+  sheet.append(canvas);
+  panel.append(toolbar, sheet);
 
   let page = 1;
+  let scale = 100;
   let document;
   let loading;
   let disposed = false;
 
   previous.addEventListener('click', () => { void draw(page - 1); });
   next.addEventListener('click', () => { void draw(page + 1); });
+  decrease.addEventListener('click', () => setZoom(scale - 25));
+  increase.addEventListener('click', () => setZoom(scale + 25));
+  reset.addEventListener('click', () => setZoom(100));
+  setZoom(100);
   void load();
+
+  function setZoom(percent) {
+    scale = Math.min(250, Math.max(25, percent));
+    canvas.style.setProperty('--pdf-zoom', scale / 100);
+    reset.textContent = scale + '%';
+    reset.setAttribute('aria-label', 'Fit to width, current zoom ' + scale + '%');
+    decrease.disabled = scale === 25;
+    increase.disabled = scale === 250;
+  }
 
   async function load() {
     try {
@@ -54,7 +80,7 @@ export function pdfPreview({ blob, url }, filename) {
       const sheet = await document.getPage(number);
       if (disposed) return;
       const size = sheet.getViewport({ scale: 1 });
-      const viewport = sheet.getViewport({ scale: Math.min(2, 1280 / size.width, 1800 / size.height) });
+      const viewport = sheet.getViewport({ scale: Math.min(4, 2560 / size.width, 2800 / size.height) });
       canvas.width = Math.ceil(viewport.width);
       canvas.height = Math.ceil(viewport.height);
       await sheet.render({ canvas, viewport, annotationMode: AnnotationMode.DISABLE }).promise;
@@ -63,6 +89,7 @@ export function pdfPreview({ blob, url }, filename) {
       status.textContent = 'Page ' + page + ' of ' + document.numPages;
       canvas.setAttribute('aria-label', status.textContent);
       canvas.hidden = false;
+      zoom.hidden = false;
       previous.hidden = next.hidden = document.numPages === 1;
       panel.closest('.asset-content')?.scrollTo({ top: 0 });
     } catch {
