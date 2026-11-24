@@ -76,7 +76,9 @@ function packetBody(packet, mode, note) {
 }
 
 export function resources(base, afterUpload) {
-  const viewer = assetBrowser(base, afterUpload);
+  const viewer = assetBrowser(base, afterUpload, (prefix, name, entries) => request(prefix + '/files', {
+    method: 'POST', data: packetBody({ name, kind: 'folder', entries }),
+  }));
   const search = $('asset-search');
   const list = $('resources');
   const empty = $('assets-empty');

@@ -81,6 +81,11 @@ function lineCount(text) {
   return text.split('\n').length - Number(text.endsWith('\n'));
 }
 
+function sourceLabel(text, language) {
+  const lines = lineCount(text);
+  return [language, lines + (lines === 1 ? ' line' : ' lines')].filter(Boolean).join(' · ');
+}
+
 function sourcePreview(text, language) {
   const scroll = element('div', '', 'source-scroll');
   scroll.tabIndex = 0;
@@ -98,20 +103,16 @@ function sourcePreview(text, language) {
 }
 
 function codeEditor(text, language, fileLanguage = '') {
-  const panel = element('div', '', 'editor-panel');
-  const toolbar = element('div', '', 'editor-toolbar');
-  const label = element('label', 'Code');
-  label.htmlFor = 'version-code';
-  toolbar.append(label, language ?? element('span', languageLabel(fileLanguage), 'muted'));
-
+  const summary = element('span');
   const grid = element('div', '', 'editor-grid');
-  const gutter = element('pre', '', 'editor-gutter');
+  const gutter = element('pre', '', 'line-numbers');
   const input = element('div', '', 'editor-input');
   const backdrop = element('pre');
   const highlighted = element('code');
   const field = element('textarea');
-  field.id = label.htmlFor;
+  field.setAttribute('aria-label', 'Code');
   field.value = text;
+  field.setSelectionRange(0, 0);
   field.maxLength = language ? 64000 : 256 * 1024;
   field.required = Boolean(language);
   field.wrap = 'off';
@@ -123,10 +124,7 @@ function codeEditor(text, language, fileLanguage = '') {
   backdrop.append(highlighted);
   input.append(backdrop, field);
   grid.append(gutter, input);
-  const status = element('div', '', 'editor-status');
-  const position = element('span');
-  status.append(position, element('span', 'UTF-8'));
-  panel.append(toolbar, grid, status);
+  const position = element('span', '', 'editor-position');
 
   let count = 0;
   let numbers = [];
@@ -151,8 +149,9 @@ function codeEditor(text, language, fileLanguage = '') {
   }
 
   function paint() {
+    const syntax = language?.value ?? fileLanguage;
     highlighted.replaceChildren();
-    highlightSource(highlighted, field.value, language?.value ?? fileLanguage);
+    highlightSource(highlighted, field.value, syntax);
     highlighted.append('\n');
     const nextCount = field.value.split('\n').length;
     if (count !== nextCount) {
@@ -160,6 +159,7 @@ function codeEditor(text, language, fileLanguage = '') {
       numbers = Array.from({ length: count }, (_, index) => index + 1);
       selectedLine = 0;
     }
+    summary.textContent = sourceLabel(field.value, languageLabel(syntax));
     cursor();
     scroll();
   }
@@ -177,7 +177,7 @@ function codeEditor(text, language, fileLanguage = '') {
   });
   language?.addEventListener('change', paint);
   paint();
-  return { panel, field };
+  return { summary, grid, field, position };
 }
 
 function pagedList(list, items, createRow) {
@@ -313,16 +313,19 @@ function diffContent(data, from, version, split) {
   return result;
 }
 
-export function assetBrowser(base, afterWrite) {
+export function assetBrowser(base, afterWrite, uploadFiles) {
   const screen = $('asset-screen');
   const workspace = $('asset-workspace');
   const controls = $('asset-controls');
   const versionSelect = $('asset-version');
   const tree = $('asset-tree');
+  const sidebar = tree.closest('.asset-sidebar');
   const search = $('asset-find');
   const toggleTree = $('asset-tree-toggle');
   const content = $('asset-content');
   const pathActions = $('asset-path-actions');
+  const contentActions = $('asset-content-actions');
+  const sourceInfo = $('asset-source-info');
   const status = $('asset-status');
   const expanded = new Set();
   let activeHash = '';
@@ -331,6 +334,8 @@ export function assetBrowser(base, afterWrite) {
   let treeCache;
   let active;
   let compiledPdf;
+  let dropTarget;
+  let uploading = false;
   let split = !window.matchMedia('(max-width: 640px)').matches;
 
   function open(id, version) {
@@ -338,6 +343,7 @@ export function assetBrowser(base, afterWrite) {
   }
 
   function navigate(hash) {
+    if (hash !== activeHash) clearDropTarget();
     if (hash !== activeHash && compiledPdf) {
       compiledPdf.dispose();
       compiledPdf = undefined;
@@ -375,6 +381,12 @@ export function assetBrowser(base, afterWrite) {
     status.classList.toggle('error', isError);
   }
 
+  function setSourceInfo(label, ...actions) {
+    sourceInfo.replaceChildren(label);
+    sourceInfo.hidden = !label;
+    contentActions.replaceChildren(...actions);
+  }
+
   async function load(route, ticket) {
     const url = base + 'assets/' + route.id;
     const changedAsset = active?.asset.id !== route.id;
@@ -391,6 +403,7 @@ export function assetBrowser(base, afterWrite) {
       pathActions.replaceChildren();
       content.replaceChildren(element('p', 'Loading…', 'asset-empty'));
     }
+    setSourceInfo('');
     try {
       let asset = assetCache;
       if (asset?.id !== route.id || !asset.history.some(({ num }) => num === route.version)) {
@@ -473,7 +486,9 @@ export function assetBrowser(base, afterWrite) {
     }
     const actions = $('asset-actions');
     actions.replaceChildren(link(asset.kind === 'folder' ? 'Download ZIP' : 'Download', prefix + '/download'));
-    if (asset.kind === 'code') actions.append(link('New version', assetHash({ ...route, mode: 'edit' }), 'button'));
+    if (asset.kind === 'code' && route.mode !== 'edit') {
+      actions.append(link('New version', assetHash({ ...route, mode: 'edit' }), 'button'));
+    }
     if (route.version !== asset.history[0].num) actions.append(button('Restore', async () => {
       const confirmed = await choose('Restore version', 'A copy of v' + route.version + ' will become the latest version.',
         [['restore', 'Restore version', 'primary']]);
@@ -492,11 +507,108 @@ export function assetBrowser(base, afterWrite) {
   search.addEventListener('input', renderTree);
   toggleTree.addEventListener('click', () => setTreeOpen(!screen.classList.contains('tree-open')));
 
+  function clearDropTarget() {
+    dropTarget?.classList.remove('tree-drop-target');
+    dropTarget = undefined;
+  }
+
+  function dropLocation(target) {
+    return target.closest('[data-drop-path]') ??
+      target.closest('.tree-row')?.querySelector('[data-drop-path]') ?? sidebar;
+  }
+
+  function dropUnavailable() {
+    if (!active?.index || active.route.mode !== 'preview' || activeHash !== assetHash(active.route)) {
+      return 'Open the folder in Preview to drop files.';
+    }
+    if (active.route.version !== active.asset.history[0].num) return 'Open the latest version to drop files.';
+    return '';
+  }
+
+  sidebar.addEventListener('dragover', (event) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    const available = !uploading && !dropUnavailable();
+    event.dataTransfer.dropEffect = available ? 'copy' : 'none';
+    const target = available ? dropLocation(event.target) : undefined;
+    if (target === dropTarget) return;
+    clearDropTarget();
+    dropTarget = target;
+    dropTarget?.classList.add('tree-drop-target');
+  });
+  sidebar.addEventListener('dragleave', (event) => {
+    if (!sidebar.contains(event.relatedTarget)) clearDropTarget();
+  });
+  sidebar.addEventListener('drop', async (event) => {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    clearDropTarget();
+    if (uploading) return;
+    const unavailable = dropUnavailable();
+    if (unavailable) {
+      notify(unavailable, true);
+      return;
+    }
+
+    const files = Array.from(event.dataTransfer.files);
+    if (Array.from(event.dataTransfer.items).some((item) => item.webkitGetAsEntry?.()?.isDirectory)) {
+      notify('Drop individual files into the tree. Use the gallery to upload a whole folder.', true);
+      return;
+    }
+    if (!files.length) return;
+    const { asset, index, prefix, route } = active;
+    const target = index.nodes.get(dropLocation(event.target).dataset.dropPath ?? '');
+    if (!target.dir && files.length !== 1) {
+      notify('Drop one file to replace it, or drop several files onto a folder.', true);
+      return;
+    }
+    const entries = files.map((file) => ({
+      file, path: target.dir ? [target.path, file.name.normalize('NFC')].filter(Boolean).join('/') : target.path,
+    }));
+    if (new Set(entries.map(({ path }) => path)).size !== entries.length ||
+        entries.some(({ path }) => index.nodes.get(path)?.dir)) {
+      notify('The dropped files contain duplicate names or conflict with a folder.', true);
+      return;
+    }
+
+    const replaced = entries.filter(({ path }) => index.nodes.has(path)).length;
+    const singleReplacement = entries.length === 1 && replaced === 1;
+    const list = element('ul', '', 'drop-changes');
+    for (const { file, path } of entries.slice(0, 8)) {
+      const destination = file.name === path.split('/').at(-1) ? path : file.name + ' → ' + path;
+      list.append(element('li', (index.nodes.has(path) ? 'Replace ' : 'Add ') + destination));
+    }
+    if (entries.length > 8) list.append(element('li', 'And ' + (entries.length - 8) + ' more'));
+    const ticket = generation;
+    uploading = true;
+    try {
+      const confirmed = await choose(singleReplacement ? 'Add a new version of this file?' : 'Commit files to this folder?',
+        'This will create a new version of ' + asset.name + '.',
+        [['commit', singleReplacement ? 'Add new version' : 'Commit files', 'primary']], list);
+      if (!confirmed || ticket !== generation) return;
+      const saved = await uploadFiles(prefix, asset.name, entries);
+      afterWrite();
+      if (ticket === generation) go({
+        version: saved.num, path: entries.length === 1 ? entries[0].path : target.path, mode: 'preview',
+      });
+      notify('Files committed to v' + saved.num + '.');
+    } catch (error) {
+      notify(error.message, true);
+      if (error.status === 409 && ticket === generation) {
+        assetCache = undefined;
+        void load(route, ++generation);
+      }
+    } finally {
+      uploading = false;
+    }
+  });
+
   function pathLink(node, label = node.name, className = 'tree-link') {
     const { route } = active;
     const control = link('', assetHash({ ...route, path: node.path, mode: route.mode === 'edit' ? 'preview' : route.mode }), className);
     const name = element('span', label, 'tree-name');
     control.title = node.path;
+    if (className === 'tree-link') control.dataset.dropPath = node.path;
     control.append(icon(node.dir ? 'folder' : 'file'), name);
     if (node.state) control.append(element('span', changeLabels[node.state], 'change-badge ' + node.state));
     if (active.route.path === node.path) control.setAttribute('aria-current', 'page');
@@ -524,6 +636,7 @@ export function assetBrowser(base, afterWrite) {
       return;
     }
     const root = link('Folder root', assetHash({ ...route, path: '', mode: route.mode === 'edit' ? 'preview' : route.mode }), 'tree-root');
+    root.dataset.dropPath = '';
     if (!route.path) root.setAttribute('aria-current', 'page');
     tree.replaceChildren(root, renderBranches(index.root.children));
 
@@ -580,9 +693,9 @@ export function assetBrowser(base, afterWrite) {
         : link(segment, assetHash({ ...route, path: parent, mode: route.mode === 'edit' ? 'preview' : route.mode }), 'path-link'));
     }
     const node = index?.nodes.get(route.path);
-    if (route.path) pathActions.append(button('Copy path', () => copyText(route.path, 'Path copied.')));
+    if (route.path) pathActions.append(button('Copy path', () => copyText(route.path, 'Path copied.'), 'quiet'));
     if (node && !node.dir && node.state !== 'removed') {
-      pathActions.append(link('Download file', prefix + '/download' + queryPath(route.path)));
+      pathActions.append(link('Download file', prefix + '/download' + queryPath(route.path), 'button quiet'));
     }
   }
 
@@ -590,9 +703,8 @@ export function assetBrowser(base, afterWrite) {
     const { asset, revision, route } = active;
     const meta = $('asset-revision');
     const details = element('div', '', 'asset-revision-info');
-    details.append(element('span', versionLabel(revision.num), 'revision-tag'),
-      element('span', revision.author), element('span', dateTime(revision.created)),
-      element('span', formatBytes(revision.size)));
+    details.title = dateTime(revision.created);
+    details.append(element('span', revision.author), element('span', formatBytes(revision.size)));
     if (revision.note) details.append(element('span', revision.note, 'asset-revision-note'));
     meta.replaceChildren(details);
     if (route.mode !== 'changes') return;
@@ -606,7 +718,7 @@ export function assetBrowser(base, afterWrite) {
     select.value = route.from;
     select.addEventListener('change', () => go({ from: Number(select.value) }));
     compare.append(select);
-    meta.append(compare);
+    pathActions.append(compare);
   }
 
   async function renderContent(ticket) {
@@ -660,13 +772,12 @@ export function assetBrowser(base, afterWrite) {
     const language = preview.lang ?? extension;
     const markdown = preview.type === 'text' && asset.kind !== 'code' && ['md', 'markdown'].includes(extension);
     const table = preview.type === 'table';
-    const actions = element('div', '', 'source-toolbar');
+    const actions = [];
     const body = element('div', '', 'source-body');
     const label = preview.type === 'zip' ? 'ZIP contents' : table ? extension.toUpperCase() + ' · ' + preview.rows.length + ' rows'
-      : [markdown ? 'Markdown' : languageLabel(language), lineCount(preview.text) + ' lines'].filter(Boolean).join(' · ');
-    actions.append(element('span', label, 'muted'));
+      : sourceLabel(preview.text, markdown ? 'Markdown' : languageLabel(language));
     if (preview.editable && route.version === asset.history[0].num) {
-      actions.append(link('Edit file', assetHash({ ...route, mode: 'edit' })));
+      actions.push(link('Edit file', assetHash({ ...route, mode: 'edit' })));
     }
     const source = () => binary ? element('p', preview.text, 'asset-empty')
       : sourcePreview(preview.text, language);
@@ -681,7 +792,7 @@ export function assetBrowser(base, afterWrite) {
           renderFormatted();
         }
       });
-      actions.append(flip);
+      actions.push(flip);
       renderFormatted();
     } else {
       body.append(source());
@@ -744,8 +855,8 @@ export function assetBrowser(base, afterWrite) {
         feedback.hidden = true;
         if (showingPdf) showSource();
       });
-      actions.append(engine, toggle);
-      content.replaceChildren(actions, feedback, body);
+      actions.push(engine, toggle);
+      content.replaceChildren(feedback, body);
 
       function showSource() {
         showingPdf = false;
@@ -753,9 +864,10 @@ export function assetBrowser(base, afterWrite) {
         body.replaceChildren(source());
       }
     } else {
-      content.replaceChildren(actions, body);
+      content.replaceChildren(body);
     }
-    if (!binary) actions.append(button('Copy', () => copyText(preview.text, 'Copied.')));
+    if (!binary) actions.push(button('Copy', () => copyText(preview.text, 'Copied.'), 'quiet'));
+    setSourceInfo(label, ...actions);
 
     function renderFormatted() {
       if (table) {
@@ -769,16 +881,14 @@ export function assetBrowser(base, afterWrite) {
   }
 
   function renderDiff(result, route) {
-    const toolbar = element('div', '', 'source-toolbar');
     const output = element('div', '', 'diff-output');
-    const label = element('span', versionLabel(route.from) + ' to ' + versionLabel(route.version), 'muted');
     const modes = element('div', '', 'segmented');
     modes.setAttribute('aria-label', 'Diff layout');
     const splitButton = button('Side by side', () => { split = true; draw(); });
     const unifiedButton = button('Unified', () => { split = false; draw(); });
     modes.append(splitButton, unifiedButton);
-    toolbar.append(label, modes);
-    content.replaceChildren(toolbar, output);
+    setSourceInfo(versionLabel(route.from) + ' to ' + versionLabel(route.version), modes);
+    content.replaceChildren(output);
     draw();
 
     function draw() {
@@ -791,7 +901,7 @@ export function assetBrowser(base, afterWrite) {
   function renderEditor(preview, ticket, fileLanguage) {
     const { asset, route, prefix } = active;
     const editingFile = asset.kind === 'folder';
-    const form = element('form', '', 'dialog-form asset-editor');
+    const form = element('form', '', 'asset-editor');
     let language;
     if (!editingFile) {
       language = $('language').cloneNode(true);
@@ -799,21 +909,22 @@ export function assetBrowser(base, afterWrite) {
       language.setAttribute('aria-label', 'Language');
       selectLanguage(language, preview.lang);
     }
-    const { panel, field: code } = codeEditor(preview.text, language, fileLanguage);
-    const note = element('input');
-    note.id = 'version-note';
+    const { summary, grid, field: code, position } = codeEditor(preview.text, language, fileLanguage);
+    setSourceInfo(summary, ...(language ? [language] : []));
+    const footer = element('footer', '', 'editor-footer');
+    const note = element('input', '', 'editor-note');
     note.maxLength = 200;
-    const noteLabel = element('label', 'Change note (optional)');
-    noteLabel.htmlFor = note.id;
-    form.append(panel, noteLabel, note);
-    const actions = element('div', '', 'small-actions');
-    const submit = element('button', 'Save version', 'primary');
+    note.placeholder = 'Change note (optional)';
+    note.setAttribute('aria-label', note.placeholder);
+    const actions = element('div', '', 'editor-actions');
+    const submit = element('button', 'Commit changes', 'primary');
     submit.type = 'submit';
     const error = element('div', '', 'error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
-    actions.append(submit, link('Cancel', assetHash({ ...route, mode: 'preview' })));
-    form.append(error, actions);
+    actions.append(link('Cancel', assetHash({ ...route, mode: 'preview' }), 'button quiet'), submit);
+    footer.append(error, note, position, actions);
+    form.append(grid, footer);
     content.replaceChildren(form);
     code.focus();
     formAction(form, async () => {

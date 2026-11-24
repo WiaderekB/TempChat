@@ -10,6 +10,7 @@ import re
 import tempfile
 import unicodedata
 import zipfile
+from bisect import bisect_left
 from itertools import islice, zip_longest
 from pathlib import PurePosixPath
 
@@ -195,10 +196,15 @@ def editable_text(db, room, digest):
     return None
 
 
+def require_latest_folder(db, row):
+    require(row['kind'] == 'folder', 400, 'Select a folder.')
+    latest = db.execute('SELECT max(num) FROM versions WHERE asset=?', (row['asset'],)).fetchone()[0]
+    require(row['num'] == latest, 409, 'A newer version of this folder exists. Open the latest version to continue.')
+
+
 def edit_text(db, room, row, manifest, path, member, now, text, note):
     require(row['kind'] == 'folder' and manifest.get(path), 404, 'File not found.')
-    latest = db.execute('SELECT max(num) FROM versions WHERE asset=?', (row['asset'],)).fetchone()[0]
-    require(row['num'] == latest, 409, 'A newer version of this folder exists. Open the latest version before editing.')
+    require_latest_folder(db, row)
     original = editable_text(db, room, manifest[path])
     require(original is not None, 422, 'Only UTF-8 text files up to 256 KiB can be edited.')
     require(isinstance(text, str) and '\0' not in text, 400, 'Enter valid UTF-8 text.')
@@ -215,6 +221,33 @@ def edit_text(db, room, row, manifest, path, member, now, text, note):
     store_blobs(db, room, {digest: encoded})
     manifest[path] = digest
     return revision(db, room, row['asset'], member, now, note.strip() or f'Edited {path}'[:200], manifest, size)
+
+
+def update_folder(db, room, row, manifest, member, now, packet):
+    require_latest_folder(db, row)
+    name, kind, mode, note, updates, contents, size = packet
+    require(name == row['name'] and kind == 'folder' and mode is None and updates and
+            all(digest is not None for digest in updates.values()), 400, 'Drop files into a folder.')
+    require(len(manifest.keys() | updates.keys()) <= MAX_ENTRIES, 413, 'A folder can contain up to 10,000 items.')
+
+    paths = sorted(manifest)
+    merged_size = row['size'] + size
+    for path in updates:
+        prefix = path + '/'
+        position = bisect_left(paths, prefix)
+        require((position == len(paths) or not paths[position].startswith(prefix)) and
+                (path not in manifest or manifest[path] is not None) and
+                all(manifest.get(str(parent)) is None for parent in PurePosixPath(path).parents),
+                400, 'The upload conflicts with a file or folder path.')
+        if path in manifest:
+            merged_size -= db.execute('SELECT length(data) FROM blobs WHERE room=? AND digest=?',
+                                      (room, manifest[path])).fetchone()[0]
+    require(merged_size <= MAX_BYTES, 413, 'The folder would exceed the 64 MiB limit.')
+    store_blobs(db, room, contents)
+    manifest.update(updates)
+    if not note:
+        note = f'Uploaded {next(iter(updates))}'[:200] if len(updates) == 1 else f'Uploaded {len(updates)} files'
+    return revision(db, room, row['asset'], member, now, note, manifest, merged_size)
 
 
 def snapshot(db, room, asset, num):

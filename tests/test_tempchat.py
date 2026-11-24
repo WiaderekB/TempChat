@@ -138,6 +138,34 @@ class TempChatTest(unittest.TestCase):
         diff = self.call(self.ala, 200, 'GET', url + '3/changes' + query + '&format=split')
         self.assertEqual(diff['notice'], 'Final newline added.')
 
+    def test_upload_to_tree_commits_only_dropped_paths_and_rejects_stale_versions(self):
+        base = self.room()
+        project = self.save(make_packet('Project', 'folder', {
+            'docs/readme.md': b'old', 'docs/keep.txt': b'keep',
+            'empty': None, 'notes.txt': b'notes',
+        }))
+        url = base + f'assets/{project["asset"]}/'
+        updates = make_packet('Project', 'folder', {
+            'docs/readme.md': b'\0replacement', 'docs/new.txt': b'',
+        })
+        self.call(self.ola, 401, 'POST', url + '1/files', updates)
+        for path in ('empty', 'docs', 'notes.txt/nested'):
+            with self.subTest(path=path):
+                collision = make_packet('Project', 'folder', {'unrelated.txt': b'extra', path: b'conflict'})
+                self.call(self.ala, 400, 'POST', url + '1/files', collision)
+        revision = self.call(self.ala, 200, 'POST', url + '1/files', updates)
+        self.assertEqual(revision['num'], 2)
+        self.call(self.ala, 409, 'POST', url + '1/files', updates)
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '1/download?path=docs/readme.md'), b'old')
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '2/download?path=docs/readme.md'), b'\0replacement')
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '2/download?path=docs/new.txt'), b'')
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '2/download?path=docs/keep.txt'), b'keep')
+        self.call(self.ala, 404, 'GET', url + '2/download?path=unrelated.txt')
+        changes = self.call(self.ala, 200, 'GET', url + '2/changes')
+        self.assertEqual(changes, [{'path': 'docs/new.txt', 'state': 'added'}, {'path': 'docs/readme.md', 'state': 'changed'}])
+        history = self.call(self.ala, 200, 'GET', url.rstrip('/'))['history']
+        self.assertEqual(history[0]['size'], len(b'\0replacementkeepnotes'))
+
     def test_latex_compiles_the_selected_snapshot_with_its_dependencies(self):
         base = self.room()
         draft = b'first version'

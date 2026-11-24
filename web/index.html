@@ -165,12 +165,22 @@
           <div class="asset-tree" id="asset-tree"></div>
         </aside>
         <article class="asset-detail">
-          <div class="asset-pathbar">
-            <button id="asset-tree-toggle" class="quiet" type="button" aria-expanded="false" aria-controls="asset-tree">Files</button>
-            <nav id="asset-breadcrumb" class="asset-breadcrumb" aria-label="Asset path"></nav>
-            <div class="asset-path-actions" id="asset-path-actions"></div>
+          <div class="asset-detail-bar">
+            <div class="asset-file-info">
+              <button id="asset-tree-toggle" class="quiet" type="button" aria-expanded="false" aria-controls="asset-tree">Files</button>
+              <div class="asset-file-details">
+                <nav id="asset-breadcrumb" class="asset-breadcrumb" aria-label="Asset path"></nav>
+                <div class="asset-file-meta">
+                  <span id="asset-source-info" class="asset-source-info" hidden></span>
+                  <div id="asset-revision" class="asset-revision"></div>
+                </div>
+              </div>
+            </div>
+            <div class="asset-file-actions">
+              <div id="asset-path-actions" class="asset-path-actions"></div>
+              <div id="asset-content-actions" class="asset-content-actions"></div>
+            </div>
           </div>
-          <div class="asset-revision" id="asset-revision"></div>
           <div class="asset-content" id="asset-content"></div>
         </article>
       </div>

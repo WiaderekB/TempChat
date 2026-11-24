@@ -206,7 +206,8 @@ class App:
             match = re.fullmatch(r'/api/room/([0-9]{6})/(.+)',path)
             require(match,404,'Not found.')
             room, action = match.groups()
-            if method == 'POST' and action == 'assets':
+            folder_upload = re.fullmatch(r'assets/(\d+)/(\d+)/files', action)
+            if method == 'POST' and (action == 'assets' or folder_upload):
                 self.member(db,req,room,now)
                 require(self.uploads.acquire(blocking=False),503,'Other uploads are in progress. Try again shortly.')
                 try:
@@ -214,6 +215,9 @@ class App:
                     db.execute('BEGIN IMMEDIATE')
                     saved_at = int(time.time())
                     member = self.member(db,req,room,saved_at)
+                    if folder_upload:
+                        row, manifest = assets.snapshot(db, room, *folder_upload.groups())
+                        return assets.update_folder(db, room, row, manifest, member, saved_at, packet)
                     return assets.save(db,room,member,saved_at,packet)
                 finally:
                     self.uploads.release()
