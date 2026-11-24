@@ -168,6 +168,25 @@ body:has(#room-view:not([hidden])) .top { display: none; }
 .bubble { min-width: 0; width: fit-content; max-width: 100%; color: var(--text); padding: .57rem .8rem; background: #20282e; border: 1px solid #354147; border-radius: .2rem .83rem .83rem .83rem; }
 .is-mine .bubble { background: #20372f; border-color: #3a594f; border-radius: .83rem .2rem .83rem .83rem; }
 .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; line-height: 1.63; max-width: 66ch; }
+.markdown-message { white-space: normal; }
+.markdown-message :is(p, ul, ol, blockquote, pre, .markdown-table) { margin: .35rem 0; }
+.markdown-message > :first-child { margin-top: 0; }
+.markdown-message > :last-child { margin-bottom: 0; }
+.markdown-message :is(h1, h2, h3, h4, h5, h6) { margin: .6rem 0 .25rem; line-height: 1.25; letter-spacing: normal; }
+.markdown-message h1 { font-size: 1.28rem; }
+.markdown-message h2 { font-size: 1.14rem; }
+.markdown-message :is(h3, h4, h5, h6) { font-size: 1rem; }
+.markdown-message :is(ul, ol) { padding-inline-start: 1.35rem; }
+.markdown-message li > :is(ul, ol) { margin-block: 0; }
+.markdown-message blockquote { border-inline-start: 2px solid var(--line); padding-inline-start: .65rem; color: var(--muted); }
+.markdown-message :not(pre) > code { font-family: var(--mono); font-size: .9em; background: #101619; border-radius: .22rem; padding: .05em .25em; }
+.markdown-message hr { border: 0; border-top: 1px solid var(--line); margin: .55rem 0; }
+.markdown-table { overflow-x: auto; }
+.markdown-table table { border-collapse: collapse; font-size: .9rem; }
+.markdown-table :is(th, td) { padding: .25rem .45rem; border: 1px solid var(--line); }
+.markdown-table .align-left { text-align: left; }
+.markdown-table .align-center { text-align: center; }
+.markdown-table .align-right { text-align: right; }
 .message-summary { display: block; margin-top: .3rem; min-height: 1.8rem; padding: .12rem 0; border: 0; color: var(--accent); background: transparent; }
 .message-summary:hover { color: #bdffe7; background: transparent; text-decoration: underline; }
 pre { background: #101619; border: 1px solid var(--line); color: #dae8ef; border-radius: .55rem; padding: .7rem; overflow: auto; max-height: 50vh; font-size: .875rem; tab-size: 4; margin: 0; }
@@ -195,9 +214,12 @@ pre { background: #101619; border: 1px solid var(--line); color: #dae8ef; border
 .composer textarea:focus-visible { outline: none; }
 .composer textarea.code-mode { font-family: var(--mono); }
 .code-fields { grid-column: 1 / -1; display: flex; gap: .4rem; }
-.code-fields input { flex: 1; width: auto; min-width: 0; font-size: .9rem; padding-block: .45rem; }
-#snippet-target { min-width: 0; max-width: min(42%, 18rem); }
-.code-fields:has(#snippet-title[hidden]) #snippet-target { flex: 1; max-width: 100%; }
+.snippet-picker { position: relative; flex: 1; min-width: 0; }
+.snippet-picker input { font-size: .9rem; padding-block: .45rem; }
+.snippet-suggestions { position: absolute; z-index: 2; inset: auto 0 calc(100% + .35rem); max-height: min(13rem, 34dvh); overflow: auto; margin: 0; padding: .25rem; list-style: none; background: var(--panel); border: 1px solid var(--line); border-radius: .6rem; box-shadow: 0 .35rem 1.5rem #0007; }
+.snippet-option { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 .5rem; min-height: 2.3rem; padding: .4rem .55rem; border-radius: .35rem; font-size: .875rem; overflow-wrap: anywhere; cursor: pointer; }
+.snippet-option:is(:hover, [aria-selected="true"]) { background: #2a4038; color: var(--accent); }
+.snippet-option .muted { font-size: .78rem; }
 .composer > .primary { min-width: 4rem; }
 .compose-mode { padding-inline: .55rem; background: transparent; border-color: transparent; color: var(--muted); }
 .compose-mode[aria-pressed="true"] { color: var(--accent); background: #233c33; border-color: #3e6558; }
@@ -296,8 +318,6 @@ dialog .section-head { position: sticky; top: 0; background: var(--panel); }
   .gallery-toolbar button { padding-inline: .55rem; }
   .gallery-card { grid-template-columns: 1fr; gap: .3rem; }
   .gallery-icon { width: 1.65rem; height: 1.65rem; }
-  .code-fields:has(#snippet-title:not([hidden])) { flex-wrap: wrap; }
-  .code-fields:has(#snippet-title:not([hidden])) #snippet-target { flex-basis: 100%; max-width: 100%; }
 }
 @media (max-width: 350px) {
   .top-inner { padding-inline: .75rem; }

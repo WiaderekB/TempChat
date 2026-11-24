@@ -98,7 +98,8 @@ class TempChatTest(unittest.TestCase):
         return self.call(client or self.ala, expected, 'POST', self.base + 'assets', data)
 
     def test_static_pages_and_health(self):
-        for path in ('/', '/admin', '/r/001234', '/app.js', '/files.js', '/ui.js', '/style.css'):
+        for path in ('/', '/admin', '/r/001234', '/app.js', '/files.js', '/ui.js', '/style.css',
+                     '/markdown.mjs', '/vendor/markdown-it.mjs'):
             with self.subTest(path=path):
                 self.assertTrue(self.call(self.ala, 200, 'GET', path))
         self.assertIn(b'<html lang="en">', self.call(self.ala, 200, 'GET', '/'))

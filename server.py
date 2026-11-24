@@ -24,8 +24,9 @@ from assets import Problem, require
 ROOT = Path(__file__).resolve().parent
 PRESENCE = 90
 STATIC = {'/': 'index.html', '/admin': 'index.html', '/app.js': 'app.js',
-          '/files.js': 'files.js', '/ui.js': 'ui.js', '/style.css': 'style.css'}
-MIME = {'.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css'}
+          '/files.js': 'files.js', '/ui.js': 'ui.js', '/style.css': 'style.css',
+          '/markdown.mjs': 'markdown.mjs', '/vendor/markdown-it.mjs': 'vendor/markdown-it.mjs'}
+MIME = {'.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css'}
 
 
 def rows(cursor):

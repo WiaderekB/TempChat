@@ -1,6 +1,7 @@
 import { $, element, button, link, request, run, formAction, notify, showError, present, choose,
-  copyText, dateTime, codeBlock, selectLanguage } from './ui.js';
+  copyText, dateTime, codeBlock, selectLanguage, snippetPicker } from './ui.js';
 import { resources } from './files.js';
+import { markdownHtml } from './markdown.mjs';
 
 const viewIds = ['join-view', 'room-view', 'login-view', 'admin-view'];
 const roomLink = (code) => '/r/' + code;
@@ -51,7 +52,6 @@ function activateRoom(code, initial) {
   const input = $('message-text');
   const form = $('message-form');
   const submitMessage = form.querySelector('button[type=submit]');
-  const snippetTarget = $('snippet-target');
   const snippetName = $('snippet-title');
   const language = $('language');
   const chat = $('chat-screen');
@@ -74,9 +74,12 @@ function activateRoom(code, initial) {
   let roomSettings;
   let checkingManagement = false;
   let nextManagementCheck = 0;
-  let snippetChoices;
-  let selectedSnippet = '';
   let newSnippetLanguage = '';
+  const picker = snippetPicker(snippetName, $('snippet-suggestions'), (selected, previous) => {
+    if (!previous) newSnippetLanguage = language.value;
+    selectLanguage(language, selected ? selected.lang : newSnippetLanguage);
+    updateSubmitLabel();
+  });
 
   function setRoomTitle(name) {
     const title = $('room-title');
@@ -143,22 +146,23 @@ function activateRoom(code, initial) {
         () => assets.openAsset(data.asset, data.num, data.name), 'msg-asset'));
       if (data.body) bubble.append(element('p', data.body, 'msg-text muted attachment-note'));
     } else {
-      const paragraph = element('p', data.body, 'msg-text');
+      const text = element('div', '', 'msg-text markdown-message');
       const excerpt = data.body.split('\n').slice(0, 12).join('\n').slice(0, 900).trimEnd();
-      if (excerpt.length < data.body.trimEnd().length) {
-        paragraph.id = 'message-' + data.id;
-        paragraph.textContent = excerpt + '…';
+      const shortened = excerpt.length < data.body.trimEnd().length;
+      const preview = markdownHtml(shortened ? excerpt : data.body);
+      text.innerHTML = preview;
+      bubble.append(text);
+      if (shortened) {
+        text.id = 'message-' + data.id;
         const toggle = button('Show full message', () => {
           const expand = toggle.getAttribute('aria-expanded') === 'false';
           toggle.setAttribute('aria-expanded', String(expand));
           toggle.textContent = expand ? 'Show less' : 'Show full message';
-          paragraph.textContent = expand ? data.body : excerpt + '…';
+          text.innerHTML = expand ? markdownHtml(data.body) : preview;
         }, 'message-summary');
         toggle.setAttribute('aria-expanded', 'false');
-        toggle.setAttribute('aria-controls', paragraph.id);
-        bubble.append(paragraph, toggle);
-      } else {
-        bubble.append(paragraph);
+        toggle.setAttribute('aria-controls', text.id);
+        bubble.append(toggle);
       }
     }
     content.append(meta, bubble);
@@ -339,7 +343,7 @@ function activateRoom(code, initial) {
         const catalog = await request(base + 'catalog');
         if (!alive) return;
         assets.render(catalog);
-        renderSnippetChoices(catalog.codes);
+        picker.update(catalog.codes);
         catalogAt = data.last;
       }
     } catch (error) {
@@ -363,35 +367,10 @@ function activateRoom(code, initial) {
     void sync();
   }
 
-  function renderSnippetChoices(codes) {
-    const choices = codes.map(({ id, name, lang }) => [String(id), name, lang]);
-    const signature = JSON.stringify(choices);
-    if (signature === snippetChoices) return;
-    snippetChoices = signature;
-    const options = choices.map(([id, name, lang]) => {
-      const option = element('option', name);
-      option.value = id;
-      option.dataset.language = lang;
-      return option;
-    });
-    snippetTarget.replaceChildren(snippetTarget.options[0], ...options);
-    snippetTarget.hidden = !options.length;
-    if (choices.some(([id]) => id === selectedSnippet)) snippetTarget.value = selectedSnippet;
-    else if (selectedSnippet) selectSnippet();
-  }
-
   function updateSubmitLabel() {
-    const label = mode === 'code' && selectedSnippet ? 'Save version' : 'Send';
+    const label = mode === 'code' && picker.selected ? 'Save version' : 'Send';
     submitMessage.textContent = label;
     submitMessage.title = label + ' (Ctrl or Command + Enter)';
-  }
-
-  function selectSnippet() {
-    if (!selectedSnippet) newSnippetLanguage = language.value;
-    selectedSnippet = snippetTarget.value;
-    snippetName.hidden = Boolean(selectedSnippet);
-    selectLanguage(language, selectedSnippet ? snippetTarget.selectedOptions[0].dataset.language : newSnippetLanguage);
-    updateSubmitLabel();
   }
 
   function setMode(value, focus = input) {
@@ -402,16 +381,15 @@ function activateRoom(code, initial) {
     input.classList.toggle('code-mode', codeMode);
     input.placeholder = codeMode ? 'Paste or type code…' : 'Write a message…';
     input.spellcheck = !codeMode;
+    if (!codeMode) picker.close();
     updateSubmitLabel();
     focus?.focus();
   }
-  snippetTarget.addEventListener('change', selectSnippet);
   $('code-mode').addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
   $('add-code').addEventListener('click', () => {
     location.hash = '#chat';
     showScreen();
-    snippetTarget.value = '';
-    selectSnippet();
+    picker.reset();
     setMode('code', snippetName);
   });
   input.addEventListener('keydown', (event) => {
@@ -427,21 +405,19 @@ function activateRoom(code, initial) {
   formAction(form, async () => {
     const sent = input.value;
     const title = snippetName.value;
-    const target = selectedSnippet;
+    const target = picker.selected;
     const kind = mode;
     const data = { kind, body: sent };
     if (kind === 'code') {
       data.lang = language.value;
-      if (target) data.asset = Number(target);
+      if (target) data.asset = target.id;
       else data.title = title;
     }
     await request(base + 'messages', { method: 'POST', data });
     if (input.value === sent) {
       input.value = '';
-      if (kind === 'code' && selectedSnippet === target) {
-        if (snippetName.value === title) snippetName.value = '';
-        snippetTarget.value = '';
-        selectSnippet();
+      if (kind === 'code' && picker.selected === target && snippetName.value === title) {
+        picker.reset();
         if (mode === 'code') setMode('text', null);
       }
     }

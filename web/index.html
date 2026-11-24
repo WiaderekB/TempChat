@@ -83,10 +83,12 @@
           <button type="button" id="jump-latest" hidden>Jump to latest</button>
           <form id="message-form" class="composer">
             <div id="code-fields" class="code-fields" hidden>
-              <label class="sr-only" for="snippet-target">Snippet to update</label>
-              <select id="snippet-target" hidden><option value="">New snippet</option></select>
-              <label class="sr-only" for="snippet-title">Snippet name</label>
-              <input id="snippet-title" maxlength="80" placeholder="Snippet name (optional)">
+              <div class="snippet-picker">
+                <label class="sr-only" for="snippet-title">Snippet name</label>
+                <input id="snippet-title" maxlength="80" placeholder="Type or find a snippet name" autocomplete="off"
+                       role="combobox" aria-autocomplete="list" aria-controls="snippet-suggestions" aria-expanded="false">
+                <ul id="snippet-suggestions" class="snippet-suggestions" role="listbox" aria-label="Existing snippets" hidden></ul>
+              </div>
               <label class="sr-only" for="language">Language</label>
               <select id="language">
                 <option value="">Plain text</option>
