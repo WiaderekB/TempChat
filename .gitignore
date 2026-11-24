@@ -1,0 +1,7 @@
+ROZMOWA.md
+.env
+.env.*
+data/
+__pycache__/
+*.py[cod]
+.DS_Store

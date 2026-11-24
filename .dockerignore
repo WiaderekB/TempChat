@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!requirements.txt
+!server.py
+!assets.py
+!schema.sql
+!web/
+!web/**

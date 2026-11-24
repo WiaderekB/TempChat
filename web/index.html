@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101316">
+  <meta name="description" content="Tymczasowe pokoje do rozmów, przesyłania kodu i plików.">
+  <title>TempChat</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">›_</span>Temp<span>Chat</span></a>
+      <nav aria-label="Menu główne"><a id="nav-link" href="/admin">Panel administratora</a></nav>
+    </div>
+  </header>
+
+  <main class="landing" id="join-view" hidden>
+    <section class="intro" aria-labelledby="intro-title">
+      <p class="eyebrow"><span class="status-dot"></span> Tymczasowe pokoje</p>
+      <h1 id="intro-title">Czat, kod i pliki<br> w jednym <em>pokoju.</em></h1>
+      <p>Przenieś projekt między komputerami albo udostępnij go grupie. Dołącz w przeglądarce za pomocą sześciocyfrowego kodu.</p>
+      <ul class="features" aria-label="Co możesz przesłać">
+        <li><span aria-hidden="true">&gt;_</span> Fragmenty kodu</li>
+        <li><span aria-hidden="true">▱</span> Całe foldery</li>
+        <li><span aria-hidden="true">↺</span> Wersje plików</li>
+      </ul>
+    </section>
+    <section class="panel join-card" aria-labelledby="join-title">
+      <div class="panel-icon" aria-hidden="true">›_</div>
+      <h2 id="join-title">Dołącz do pokoju</h2>
+      <form id="join-form">
+        <label for="join-code">Kod pokoju</label>
+        <input id="join-code" class="entry-code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+        <label for="join-nick">Twój nick</label>
+        <input id="join-nick" name="nick" autocomplete="nickname" maxlength="40" placeholder="np. Bartek" required>
+        <p class="error" id="join-error" role="alert" hidden></p>
+        <button class="primary" type="submit">Dołącz do pokoju</button>
+      </form>
+      <p class="card-foot">Kod dostaniesz od osoby prowadzącej pokój.</p>
+    </section>
+  </main>
+
+  <main class="workspace" id="room-view" hidden>
+    <header class="workspace-head">
+      <div class="workspace-title">
+        <p class="eyebrow">Pokój <span id="room-code" class="mono"></span></p>
+        <h1 id="room-title"></h1>
+      </div>
+      <div class="workspace-actions">
+        <span id="connection" class="connection"><span class="status-dot"></span><span id="connection-label">Połączono</span></span>
+        <button type="button" id="share-room">Kopiuj link</button>
+        <button type="button" id="leave-room">Wyjdź</button>
+      </div>
+    </header>
+    <div class="room-grid">
+      <section class="panel chat" aria-labelledby="chat-title">
+        <div class="section-head">
+          <h2 id="chat-title">Rozmowa</h2>
+          <span id="current-user" class="muted"></span>
+        </div>
+        <div id="messages-scroll" class="messages-scroll" tabindex="0" aria-label="Historia rozmowy">
+          <button type="button" id="load-older" hidden>Wczytaj starsze</button>
+          <p class="empty" id="chat-empty">Tu pojawią się wiadomości oraz przesłane pliki.</p>
+          <ol id="messages" aria-live="polite" aria-relevant="additions"></ol>
+        </div>
+        <form id="message-form" class="composer">
+          <div class="composer-tools">
+            <div class="segmented" aria-label="Typ wiadomości">
+              <button id="text-mode" type="button" aria-pressed="true">Tekst</button>
+              <button id="code-mode" type="button" aria-pressed="false"><span aria-hidden="true">&gt;_</span> Kod</button>
+            </div>
+            <label class="sr-only" for="language">Język kodu</label>
+            <select id="language" hidden>
+              <option value="">Zwykły tekst</option>
+              <option value="bash">Bash</option>
+              <option value="c">C/C++</option>
+              <option value="css">CSS</option>
+              <option value="html">HTML</option>
+              <option value="java">Java</option>
+              <option value="js">JavaScript</option>
+              <option value="json">JSON</option>
+              <option value="python">Python</option>
+              <option value="sql">SQL</option>
+              <option value="ts">TypeScript</option>
+            </select>
+          </div>
+          <label class="sr-only" for="message-text">Wiadomość</label>
+          <textarea id="message-text" maxlength="64000" placeholder="Napisz wiadomość…" rows="3" required></textarea>
+          <div class="composer-bottom"><span class="muted">Ctrl / ⌘ + Enter</span><button type="submit" class="primary">Wyślij</button></div>
+        </form>
+      </section>
+      <aside class="room-side">
+        <section class="panel resource-pane" aria-labelledby="assets-title">
+          <div class="section-head"><h2 id="assets-title">Zasoby</h2><span class="pill" id="asset-count">0</span></div>
+          <div class="resource-body">
+            <div class="file-drop" id="file-drop">
+              <p>Upuść plik lub folder</p>
+              <div class="small-actions">
+                <button type="button" id="pick-file">Dodaj plik</button>
+                <button type="button" id="pick-folder">Dodaj folder</button>
+              </div>
+              <input type="file" id="file-input" multiple hidden>
+              <input type="file" id="folder-input" webkitdirectory multiple hidden>
+            </div>
+            <div class="segmented resource-tabs" aria-label="Widok zasobów">
+              <button type="button" id="files-tab" aria-pressed="true">Pliki i foldery</button>
+              <button type="button" id="snippets-tab" aria-pressed="false">Kod</button>
+            </div>
+            <p id="assets-empty" class="empty"></p>
+            <ul id="resources" class="resource-list"></ul>
+          </div>
+        </section>
+        <section class="panel participants" aria-labelledby="people-title">
+          <div class="section-head"><h2 id="people-title">Uczestnicy</h2><span class="pill" id="people-count">0</span></div>
+          <ul id="people" class="people-list"></ul>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <main class="landing single" id="login-view" hidden>
+    <section class="panel join-card" aria-labelledby="login-title">
+      <div class="panel-icon" aria-hidden="true">›_</div>
+      <h1 id="login-title">Panel administratora</h1>
+      <form id="login-form">
+        <label for="password">Hasło administratora</label>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+        <p class="error" id="login-error" role="alert" hidden></p>
+        <button type="submit" class="primary">Zaloguj się</button>
+      </form>
+    </section>
+  </main>
+
+  <main class="workspace admin" id="admin-view" hidden>
+    <header class="workspace-head">
+      <div class="workspace-title"><p class="eyebrow">Administracja</p><h1>Pokoje</h1></div>
+      <div class="workspace-actions"><button type="button" id="admin-logout">Wyloguj się</button></div>
+    </header>
+    <div class="admin-grid">
+      <section class="panel" aria-labelledby="active-title">
+        <div class="section-head"><h2 id="active-title">Aktywne pokoje</h2><span id="room-count" class="pill">0</span></div>
+        <div id="active-rooms" class="admin-rooms"></div>
+      </section>
+      <section class="panel create-panel" aria-labelledby="create-title">
+        <h2 id="create-title">Utwórz pokój</h2>
+        <form id="create-form">
+          <label for="new-title">Nazwa pokoju</label>
+          <input id="new-title" required maxlength="80" placeholder="np. Laboratorium Java">
+          <label for="new-hours">Czas przechowywania po opuszczeniu</label>
+          <div class="unit-input"><input id="new-hours" type="number" min="24" max="8760" step="1" value="24" required><span>godz.</span></div>
+          <p class="muted">Od 24 do 8760 godzin.</p>
+          <button type="submit" class="primary">Utwórz pokój</button>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <header class="section-head"><h2 id="dialog-title"></h2><button id="close-dialog" type="button" aria-label="Zamknij okno">×</button></header>
+    <div id="dialog-body"></div>
+  </dialog>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <noscript>TempChat wymaga włączonej obsługi JavaScript.</noscript>
+</body>
+</html>
