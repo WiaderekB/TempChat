@@ -28,51 +28,51 @@ def require(condition, status, message):
 
 
 def path_name(value, nested=True):
-    require(isinstance(value, str), 400, 'Niepoprawna nazwa.')
+    require(isinstance(value, str), 400, 'Invalid name.')
     value = unicodedata.normalize('NFC', value)
     parts = value.split('/')
     require(0 < len(value.encode()) <= 1024 and (nested or len(parts) == 1)
             and all(part.strip() and part not in ('.', '..') and len(part.encode()) <= 255 for part in parts)
-            and not re.search(r'[\\:\x00-\x1f\x7f]', value), 400, 'Niepoprawna ścieżka.')
+            and not re.search(r'[\\:\x00-\x1f\x7f]', value), 400, 'Invalid path.')
     return value
 
 
 def unpack(stream, length):
-    require(4 <= length <= MAX_BYTES + MIB + 4, 413, 'Limit przesyłania wynosi 64 MiB.')
+    require(4 <= length <= MAX_BYTES + MIB + 4, 413, 'The upload limit is 64 MiB.')
     header_len = int.from_bytes(stream.read(4), 'big')
-    require(0 < header_len <= min(MIB, length - 4), 400, 'Niepoprawny nagłówek pliku.')
+    require(0 < header_len <= min(MIB, length - 4), 400, 'Invalid upload header.')
     head = json.loads(stream.read(header_len))
-    require(isinstance(head, dict), 400, 'Niepoprawny opis.')
+    require(isinstance(head, dict), 400, 'Invalid upload metadata.')
     name = path_name(head.get('name'), False)
     kind, items, mode = head.get('kind'), head.get('entries'), head.get('mode')
     require(kind in ('folder', 'file') and isinstance(items, list) and len(items) <= MAX_ENTRIES,
-            400, 'Niepoprawna lista plików lub więcej niż 2048 elementów.')
-    require(kind == 'folder' or len(items) == 1, 400, 'Oczekiwano jednego pliku.')
-    require(mode in (None, 'copy', 'version'), 400, 'Niepoprawny tryb zapisu.')
+            400, 'Invalid file list. Uploads can contain up to 2,048 items.')
+    require(kind == 'folder' or len(items) == 1, 400, 'Expected one file.')
+    require(mode in (None, 'copy', 'version'), 400, 'Invalid save mode.')
     remaining = length - header_len - 4
-    require(remaining <= MAX_BYTES, 413, 'Limit przesyłania wynosi 64 MiB.')
+    require(remaining <= MAX_BYTES, 413, 'The upload limit is 64 MiB.')
     manifest, contents = {}, {}
     for item in items:
-        require(isinstance(item, dict), 400, 'Niepoprawny wpis.')
+        require(isinstance(item, dict), 400, 'Invalid upload entry.')
         path = path_name(item.get('path'))
         size = item.get('size')
-        require(path not in manifest and (kind == 'folder' or path == name), 400, 'Powtórzona lub błędna ścieżka.')
+        require(path not in manifest and (kind == 'folder' or path == name), 400, 'Duplicate or invalid path.')
         if size is None and kind == 'folder':
             manifest[path] = None
             continue
-        require(type(size) is int and 0 <= size <= remaining, 400, 'Niepoprawny rozmiar pliku.')
+        require(type(size) is int and 0 <= size <= remaining, 400, 'Invalid file size.')
         data = stream.read(size)
-        require(len(data) == size, 400, 'Niepełny plik.')
+        require(len(data) == size, 400, 'Incomplete file.')
         remaining -= size
         digest = hashlib.sha256(data).hexdigest()
         contents[digest] = data
         manifest[path if kind == 'folder' else name] = digest
     for path in manifest:
         for ancestor in PurePosixPath(path).parents:
-            require(manifest.get(str(ancestor)) is None, 400, 'Plik blokuje ścieżkę folderu.')
-    require(remaining == 0, 400, 'Niepoprawny rozmiar paczki.')
+            require(manifest.get(str(ancestor)) is None, 400, 'A file occupies a folder path.')
+    require(remaining == 0, 400, 'Invalid upload size.')
     note = head.get('note', '')
-    require(isinstance(note, str) and len(note) <= 200, 400, 'Opis wersji jest zbyt długi.')
+    require(isinstance(note, str) and len(note) <= 200, 400, 'The version note is too long.')
     return name, kind, mode, note.strip(), manifest, contents, length - header_len - 4
 
 
@@ -113,7 +113,7 @@ def save(db, room, member, now, packet):
             manifest = {name: next(iter(manifest.values()))}
         existing = None
     if existing:
-        require(mode == 'version' and existing['kind'] == kind, 409, 'Nazwa jest już zajęta.')
+        require(mode == 'version' and existing['kind'] == kind, 409, 'An asset already uses this name.')
         asset = existing['id']
     else:
         asset = db.execute('INSERT INTO assets(room,name,kind) VALUES(?,?,?)', (room,name,kind)).lastrowid
@@ -127,7 +127,7 @@ def store_blobs(db, room, contents):
         if db.execute('SELECT 1 FROM blobs WHERE room=? AND digest=?',(room,digest)).fetchone():
             continue
         used += len(data)
-        require(used <= ROOM_BYTES, 413, 'Pokój osiągnął limit 512 MiB danych plikowych.')
+        require(used <= ROOM_BYTES, 413, 'This room has reached its 512 MiB storage limit.')
         db.execute('INSERT INTO blobs(room,digest,data) VALUES(?,?,?)', (room,digest,data))
 
 
@@ -141,14 +141,14 @@ def save_snippet(db, room, member, now, text, lang, data):
     asset = data.get('asset')
     if asset is None:
         name = data.get('title', '')
-        require(isinstance(name, str) and len(name) <= 80, 400, 'Nazwa może zawierać do 80 znaków.')
-        asset = create_snippet(db, room, name.strip() or 'Fragment kodu')
+        require(isinstance(name, str) and len(name) <= 80, 400, 'A name can contain up to 80 characters.')
+        asset = create_snippet(db, room, name.strip() or 'Code snippet')
     else:
-        require(type(asset) is int and 0 < asset < 2**63, 400, 'Niepoprawny fragment.')
+        require(type(asset) is int and 0 < asset < 2**63, 400, 'Invalid code snippet.')
         require(db.execute("SELECT 1 FROM assets WHERE id=? AND room=? AND kind='code'",
-                           (asset, room)).fetchone(), 404, 'Nie znaleziono fragmentu kodu.')
+                           (asset, room)).fetchone(), 404, 'Code snippet not found.')
     note = data.get('note', '')
-    require(isinstance(note, str) and len(note) <= 200, 400, 'Opis wersji jest zbyt długi.')
+    require(isinstance(note, str) and len(note) <= 200, 400, 'The version note is too long.')
     encoded = text.encode()
     digest = hashlib.sha256(encoded).hexdigest()
     store_blobs(db, room, {digest: encoded})
@@ -159,7 +159,7 @@ def migrate_snippets(db):
     pending = db.execute("SELECT * FROM messages WHERE kind='code' AND asset IS NULL ORDER BY id").fetchall()
     for message in pending:
         room = message['room']
-        asset = create_snippet(db, room, 'Fragment kodu')
+        asset = create_snippet(db, room, 'Code snippet')
         data = message['body'].encode()
         digest = hashlib.sha256(data).hexdigest()
         db.execute('INSERT OR IGNORE INTO blobs(room,digest,data) VALUES(?,?,?)', (room, digest, data))
@@ -178,7 +178,7 @@ def get_blob(db, room, digest, limit=None):
 def snapshot(db, room, asset, num):
     row = db.execute('SELECT v.*,a.name,a.kind FROM versions v JOIN assets a ON a.id=v.asset '
                      'WHERE a.room=? AND a.id=? AND v.num=?', (room,asset,num)).fetchone()
-    require(row, 404, 'Nie znaleziono wersji.')
+    require(row, 404, 'Version not found.')
     return row, json.loads(row['manifest'])
 
 
@@ -193,7 +193,7 @@ def preview(db, room, digest):
                 return {'type':'text', 'text':data.decode('utf-8')}
         except (UnicodeError, zipfile.BadZipFile):
             pass
-    return {'type':'binary', 'text':'Podgląd niedostępny. Pobierz plik, aby go otworzyć.'}
+    return {'type':'binary', 'text':'Preview unavailable. Download the file to open it.'}
 
 
 def changes(old, new):
@@ -212,21 +212,21 @@ def changes(old, new):
 
 
 def diff_text(db, room, old, new, path):
-    require(path in old or path in new, 404, 'Brak pliku.')
+    require(path in old or path in new, 404, 'File not found.')
     lines = []
     for version in (old,new):
         digest = version.get(path)
         data = get_blob(db, room, digest, 64 * 1024) if digest else b''
         if data is None or b'\0' in data:
-            return 'Porównanie tekstowe niedostępne dla tego pliku.'
+            return 'A text diff is unavailable for this file.'
         try:
             lines.append(data.decode().splitlines(keepends=True))
         except UnicodeError:
-            return 'Plik binarny.'
+            return 'Binary file.'
     if max(map(len, lines)) > 2000:
-        return 'Plik przekracza limit 2000 wierszy podglądu różnic.'
+        return 'This file exceeds the 2,000-line diff limit.'
     return ''.join(line if line.endswith('\n') else line+'\n' for line in
-                   difflib.unified_diff(*lines, fromfile='poprzednia', tofile='wybrana')) or 'Brak różnic w tekście.'
+                   difflib.unified_diff(*lines, fromfile='previous', tofile='selected')) or 'No text changes.'
 
 
 def archive(db, room, name, manifest):

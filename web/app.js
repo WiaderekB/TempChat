@@ -9,14 +9,14 @@ const roomAPI = (code) => '/api/room/' + code + '/';
 const adminAPI = '/api/admin/';
 const digits = (value) => value.replace(/[^0-9]/g, '').slice(0, 6);
 const formatCode = (value) => value.length > 3 ? value.slice(0, 3) + ' - ' + value.slice(3) : value;
-const shortTime = new Intl.DateTimeFormat('pl-PL', { timeStyle: 'short' });
-const shortDay = new Intl.DateTimeFormat('pl-PL', { dateStyle: 'long' });
+const shortTime = new Intl.DateTimeFormat('en-GB', { timeStyle: 'short' });
+const shortDay = new Intl.DateTimeFormat('en-GB', { dateStyle: 'long' });
 
 function view(id) {
   for (const panel of viewIds) $(panel).hidden = panel !== id;
   const admin = id === 'admin-view' || id === 'login-view';
   $('nav-link').href = admin ? '/' : '/admin';
-  $('nav-link').textContent = admin ? 'Dołącz do pokoju' : 'Panel administratora';
+  $('nav-link').textContent = admin ? 'Join room' : 'Admin panel';
 }
 
 function showJoin(code = '', message = '') {
@@ -65,10 +65,12 @@ function activateRoom(code, initial) {
   let peopleModal;
 
   function state(data) {
-    $('room-title').textContent = data.room.title;
+    const title = $('room-title');
+    title.textContent = data.room.title;
+    title.title = data.room.title;
     $('room-code').textContent = formatCode(code);
     $('people-count').textContent = data.people.length;
-    $('show-people').setAttribute('aria-label', 'Uczestnicy: ' + data.people.length);
+    $('show-people').setAttribute('aria-label', 'Participants: ' + data.people.length);
     if (people.length !== data.people.length || people.some((name, i) => name !== data.people[i])) {
       people = data.people;
       if (peopleModal) renderPeople();
@@ -90,7 +92,7 @@ function activateRoom(code, initial) {
 
   function connected(flag) {
     $('connection').classList.toggle('offline', !flag);
-    const label = flag ? 'Połączono' : 'Ponawiam połączenie…';
+    const label = flag ? 'Connected' : 'Reconnecting…';
     $('connection-label').textContent = label;
     $('connection').title = label;
   }
@@ -103,18 +105,20 @@ function activateRoom(code, initial) {
     const time = element('time', shortTime.format(data.created * 1000));
     time.dateTime = new Date(data.created * 1000).toISOString();
     time.title = dateTime(data.created);
-    meta.append(element('strong', data.mine ? 'Ty' : data.author), time);
+    meta.append(element('strong', data.mine ? 'You' : data.author), time);
     if (!data.mine) {
       const avatar = element('span', Array.from(data.author)[0]?.toUpperCase(), 'avatar');
       avatar.setAttribute('aria-hidden', 'true');
       row.append(avatar);
     }
     if (data.kind === 'code') {
+      let heading;
       if (data.asset) {
-        bubble.append(button(data.name + ' · v' + data.num,
-          () => assets.openAsset(data.asset, data.num, data.name), 'snippet-heading'));
+        heading = button(data.name + ' · v' + data.num,
+          () => assets.openAsset(data.asset, data.num, data.name), 'snippet-heading');
+        heading.title = 'Open full version';
       }
-      bubble.append(codeBlock(data.body, data.lang));
+      bubble.append(codeBlock(data.body, data.lang, { heading }));
     } else if (data.kind === 'asset') {
       const icon = data.asset_kind === 'folder' ? '▱ ' : '▤ ';
       bubble.append(button(icon + data.name + ' · v' + data.num,
@@ -126,10 +130,10 @@ function activateRoom(code, initial) {
       if (excerpt.length < data.body.trimEnd().length) {
         paragraph.id = 'message-' + data.id;
         paragraph.textContent = excerpt + '…';
-        const toggle = button('Pokaż całą wiadomość', () => {
+        const toggle = button('Show full message', () => {
           const expand = toggle.getAttribute('aria-expanded') === 'false';
           toggle.setAttribute('aria-expanded', String(expand));
-          toggle.textContent = expand ? 'Zwiń wiadomość' : 'Pokaż całą wiadomość';
+          toggle.textContent = expand ? 'Show less' : 'Show full message';
           paragraph.textContent = expand ? data.body : excerpt + '…';
         }, 'message-summary');
         toggle.setAttribute('aria-expanded', 'false');
@@ -175,7 +179,7 @@ function activateRoom(code, initial) {
   }
 
   function showScreen() {
-    const showGallery = location.hash === '#zasoby';
+    const showGallery = location.hash === '#assets' || location.hash === '#zasoby';
     if (showGallery && !chat.hidden) {
       savedScroll = scroller.scrollTop;
       followLatest = nearBottom();
@@ -272,13 +276,13 @@ function activateRoom(code, initial) {
     $('code-mode').setAttribute('aria-pressed', String(codeMode));
     $('code-fields').hidden = !codeMode;
     input.classList.toggle('code-mode', codeMode);
-    input.placeholder = codeMode ? 'Wklej lub wpisz kod…' : 'Napisz wiadomość…';
+    input.placeholder = codeMode ? 'Paste or type code…' : 'Write a message…';
     input.spellcheck = !codeMode;
     focus?.focus();
   }
   $('code-mode').addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
   $('add-code').addEventListener('click', () => {
-    location.hash = '#rozmowa';
+    location.hash = '#chat';
     showScreen();
     setMode('code', $('snippet-title'));
   });
@@ -308,11 +312,11 @@ function activateRoom(code, initial) {
     refreshSoon();
   });
   $('show-people').addEventListener('click', () => {
-    peopleModal = present('Uczestnicy');
+    peopleModal = present('Participants');
     renderPeople();
     peopleModal.el.addEventListener('close', () => { peopleModal = null; }, { once: true });
   });
-  $('share-room').addEventListener('click', () => copyText(fullLink(code), 'Skopiowano link do pokoju.'));
+  $('share-room').addEventListener('click', () => copyText(fullLink(code), 'Room link copied.'));
   $('leave-room').addEventListener('click', () => run($('leave-room'), async () => {
     await request(base + 'leave', { method: 'POST' });
     alive = false;
@@ -335,21 +339,21 @@ function roomCard(room) {
   const code = element('span', formatCode(room.code), 'mono room-id');
   const title = element('h3', room.title);
   const detail = element('p', '', 'muted');
-  detail.append(code, ' · Osób online: ' + room.online + ' · Retencja: ' + room.hours + ' godz.');
-  if (!room.online) detail.append(' · Wygaśnie: ' + dateTime(room.expires));
+  detail.append(code, ' · Online: ' + room.online + ' · Retention: ' + room.hours + ' hours');
+  if (!room.online) detail.append(' · Expires: ' + dateTime(room.expires));
   const actions = element('div', '', 'small-actions');
   actions.append(
-    link('Otwórz', roomLink(room.code)),
-    button('Kopiuj link', () => copyText(fullLink(room.code), 'Skopiowano link do pokoju.')),
-    button('Zmień retencję', () => changeRetention(room)),
-    button('Zamknij', async () => {
-      const confirmed = await choose('Zamknij pokój ' + formatCode(room.code) + '?',
-        'Zamknięcie od razu usuwa wiadomości, kod, pliki, foldery i wszystkie ich wersje.',
-        [['close', 'Zamknij i usuń dane', 'danger']]);
+    link('Open', roomLink(room.code)),
+    button('Copy link', () => copyText(fullLink(room.code), 'Room link copied.')),
+    button('Edit retention', () => changeRetention(room)),
+    button('Close', async () => {
+      const confirmed = await choose('Close room ' + formatCode(room.code) + '?',
+        'Closing the room immediately deletes its messages, code, files, folders, and version history.',
+        [['close', 'Close and delete data', 'danger']]);
       if (!confirmed) return;
       await request(adminAPI + 'rooms/' + room.code, { method: 'DELETE' });
       await loadRooms();
-      notify('Pokój zamknięty.');
+      notify('Room closed.');
     }, 'danger'),
   );
   item.append(title, detail, actions);
@@ -357,9 +361,9 @@ function roomCard(room) {
 }
 
 function changeRetention(room) {
-  const modal = present('Czas przechowywania pokoju');
+  const modal = present('Room retention');
   const form = element('form', '', 'dialog-form');
-  const label = element('label', 'Godziny od opuszczenia pokoju');
+  const label = element('label', 'Hours after everyone leaves');
   label.htmlFor = 'retention';
   const input = element('input');
   input.id = 'retention';
@@ -368,7 +372,7 @@ function changeRetention(room) {
   input.max = '8760';
   input.required = true;
   input.value = room.hours;
-  const submit = element('button', 'Zapisz', 'primary');
+  const submit = element('button', 'Save', 'primary');
   submit.type = 'submit';
   form.append(label, input, submit);
   modal.body.append(form);
@@ -376,7 +380,7 @@ function changeRetention(room) {
     await request(adminAPI + 'rooms/' + room.code, { method: 'PATCH', data: { hours: input.valueAsNumber } });
     modal.el.close();
     await loadRooms();
-    notify('Zapisano retencję.');
+    notify('Retention updated.');
   }, modal.error);
 }
 
@@ -388,7 +392,7 @@ async function loadRooms() {
   if (snapshot === displayedRooms) return;
   displayedRooms = snapshot;
   $('room-count').textContent = rooms.length;
-  const content = rooms.length ? rooms.map(roomCard) : [element('p', 'Brak aktywnych pokoi.', 'empty')];
+  const content = rooms.length ? rooms.map(roomCard) : [element('p', 'No active rooms.', 'empty')];
   $('active-rooms').replaceChildren(...content);
 }
 
@@ -428,11 +432,11 @@ formAction($('create-form'), async () => {
   const room = await request(adminAPI + 'rooms', { method: 'POST', data });
   $('create-form').reset();
   await loadRooms();
-  const modal = present('Pokój utworzony');
+  const modal = present('Room created');
   const actions = element('div', '', 'small-actions');
-  actions.append(button('Kopiuj link', () => copyText(fullLink(room.code), 'Skopiowano link do pokoju.')),
-    link('Otwórz pokój', roomLink(room.code), 'button primary'));
-  modal.body.append(element('p', 'Kod pokoju: ' + formatCode(room.code), 'mono room-id'), actions);
+  actions.append(button('Copy link', () => copyText(fullLink(room.code), 'Room link copied.')),
+    link('Open room', roomLink(room.code), 'button primary'));
+  modal.body.append(element('p', 'Room code: ' + formatCode(room.code), 'mono room-id'), actions);
 });
 
 async function start() {

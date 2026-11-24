@@ -34,13 +34,13 @@ def rows(cursor):
 
 def field(data, key, limit):
     value = data.get(key)
-    require(isinstance(value,str) and value.strip() and len(value) <= limit, 400, 'Sprawdź wprowadzone dane.')
+    require(isinstance(value,str) and value.strip() and len(value) <= limit, 400, 'Check the information you entered.')
     return value.strip()
 
 
 def retention(data):
     hours = data.get('hours',24)
-    require(type(hours) is int and 24 <= hours <= 8760, 400, 'Wybierz okres od 24 do 8760 godzin.')
+    require(type(hours) is int and 24 <= hours <= 8760, 400, 'Choose a retention period between 24 and 8,760 hours.')
     return hours
 
 
@@ -65,9 +65,9 @@ class Request:
         return token_hash(item.value if item else '')
 
     def body(self):
-        require(0 < self.length <= 300000, 413, 'Niepoprawny rozmiar wiadomości.')
+        require(0 < self.length <= 300000, 413, 'Invalid request size.')
         value = json.loads(self.stream.read(self.length))
-        require(isinstance(value,dict), 400, 'Niepoprawne dane.')
+        require(isinstance(value,dict), 400, 'Invalid request data.')
         return value
 
     def arg(self, key, default=''):
@@ -76,7 +76,7 @@ class Request:
 
 class App:
     def __init__(self, directory, password, origin, sweep=True, trusted_proxy=''):
-        require(12 <= len(password) <= 1024, 500, 'Ustaw ADMIN_PASSWORD o długości od 12 do 1024 znaków.')
+        require(12 <= len(password) <= 1024, 500, 'Set ADMIN_PASSWORD to between 12 and 1,024 characters.')
         self.password = token_hash(password)
         self.origin = origin.rstrip('/')
         self.trusted_proxy = ipaddress.ip_network(trusted_proxy, strict=False) if trusted_proxy else None
@@ -136,7 +136,7 @@ class App:
             q = self.limits.setdefault(key, deque())
             while q and q[0] <= now-60:
                 q.popleft()
-            require(len(q)<limit, 429, 'Za dużo prób. Spróbuj ponownie za minutę.')
+            require(len(q)<limit, 429, 'Too many attempts. Try again in a minute.')
             q.append(now)
 
     def set_cookie(self, req, name, value, path, age=None):
@@ -159,11 +159,11 @@ class App:
                 mime, payload = 'application/json; charset=utf-8', json.dumps(result, ensure_ascii=False).encode()
         except (Problem, ValueError, UnicodeError, RecursionError) as err:
             status = err.status if isinstance(err, Problem) else 400
-            message = str(err) if isinstance(err, Problem) else 'Niepoprawne dane żądania.'
+            message = str(err) if isinstance(err, Problem) else 'Invalid request data.'
             mime, payload = 'application/json', json.dumps({'error': message}).encode()
         except Exception:
             traceback.print_exc()
-            status, mime, payload = 500, 'application/json', b'{"error":"Blad serwera."}'
+            status, mime, payload = 500, 'application/json', b'{"error":"Server error."}'
         headers = [('Content-Type',mime),('Cache-Control','no-store'),
                    ('Referrer-Policy','no-referrer'),('X-Content-Type-Options','nosniff'),
                    ('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")]
@@ -186,17 +186,17 @@ class App:
             return {'ok':True}
         if method != 'GET':
             require(req.env.get('HTTP_X_TEMPCHAT') == '1' and req.env.get('HTTP_ORIGIN', self.origin) == self.origin,
-                    403, 'Żądanie spoza aplikacji.')
+                    403, 'Request origin is not allowed.')
         now = int(time.time())
         with closing(self.connect()) as db, db:
             if path.startswith('/api/admin/'):
                 return self.admin(db,req,now)
             match = re.fullmatch(r'/api/room/([0-9]{6})/(.+)',path)
-            require(match,404,'Nie znaleziono.')
+            require(match,404,'Not found.')
             room, action = match.groups()
             if method == 'POST' and action == 'assets':
                 self.member(db,req,room,now)
-                require(self.uploads.acquire(blocking=False),503,'Trwają inne przesyłania. Spróbuj ponownie.')
+                require(self.uploads.acquire(blocking=False),503,'Other uploads are in progress. Try again shortly.')
                 try:
                     packet = assets.unpack(req.stream,req.length)
                     db.execute('BEGIN IMMEDIATE')
@@ -236,11 +236,11 @@ class App:
                 if method == 'POST':
                     data = req.body()
                     kind = data.get('kind')
-                    require(kind in ('text','code'),400,'Wybierz typ wiadomości.')
+                    require(kind in ('text','code'),400,'Choose a message type.')
                     body = data.get('body')
-                    require(isinstance(body,str) and body.strip() and len(body)<=64000,400,'Wiadomość musi mieć od 1 do 64 000 znaków.')
+                    require(isinstance(body,str) and body.strip() and len(body)<=64000,400,'A message must be between 1 and 64,000 characters.')
                     lang = data.get('lang','')
-                    require(isinstance(lang,str) and len(lang)<=40,400,'Niepoprawny język.')
+                    require(isinstance(lang,str) and len(lang)<=40,400,'Invalid language.')
                     if kind == 'code':
                         return assets.save_snippet(db, room, member, now, body, lang, data)
                     db.execute("INSERT INTO messages(room,kind,author,body,lang,created,sender) VALUES(?,?,?,?,?,?,?)",
@@ -257,20 +257,20 @@ class App:
             if code and method == 'GET':
                 row = db.execute("SELECT id,author,body,lang,created,asset,num FROM messages "
                                  "WHERE room=? AND kind='code' AND id=?", (room,code[1])).fetchone()
-                require(row,404,'Nie znaleziono kodu.')
+                require(row,404,'Code snippet not found.')
                 return dict(row)
             return self.asset_action(db,req,room,member,now,action)
 
     @staticmethod
     def room(db,room,now):
         item = db.execute('SELECT * FROM rooms WHERE code=? AND expires>?',(room,now)).fetchone()
-        require(item,404,'Pokój wygasł, został zamknięty lub kod jest błędny.')
+        require(item,404,'Room not found. Check the code or ask the host if the room is still open.')
         return item
 
     def member(self,db,req,room,now):
         self.room(db,room,now)
         row = db.execute('SELECT * FROM members WHERE room=? AND token=?',(room,req.cookie('member'))).fetchone()
-        require(row,401,'Dołącz do pokoju swoim nickiem.')
+        require(row,401,'Enter a nickname to join the room.')
         return row
 
     @staticmethod
@@ -293,13 +293,13 @@ class App:
             self.throttle(req,'admin',8)
             password = req.body().get('password')
             require(isinstance(password, str) and len(password) <= 1024 and
-                    hmac.compare_digest(self.password, token_hash(password)), 401, 'Niepoprawne hasło administratora.')
+                    hmac.compare_digest(self.password, token_hash(password)), 401, 'Incorrect admin password.')
             token = secrets.token_urlsafe(32)
             db.execute('DELETE FROM admins WHERE token=?', (req.cookie('admin'),))
             db.execute('INSERT INTO admins VALUES(?,?)',(token_hash(token),now+43200))
             self.set_cookie(req,'admin',token,'/api/admin/',43200)
             return {'ok':True}
-        require(db.execute('SELECT 1 FROM admins WHERE token=? AND expires>?',(req.cookie('admin'),now)).fetchone(),401,'Zaloguj się do panelu.')
+        require(db.execute('SELECT 1 FROM admins WHERE token=? AND expires>?',(req.cookie('admin'),now)).fetchone(),401,'Log in to the admin panel.')
         if action == 'logout' and method == 'POST':
             db.execute('DELETE FROM admins WHERE token=?',(req.cookie('admin'),))
             self.set_cookie(req,'admin','','/api/admin/',0)
@@ -326,15 +326,15 @@ class App:
             if method == 'DELETE':
                 db.execute('DELETE FROM rooms WHERE code=?',(room['code'],))
                 return {'ok':True}
-        raise Problem(404,'Nie znaleziono.')
+        raise Problem(404,'Not found.')
 
     def asset_action(self,db,req,room,member,now,action):
         match = re.fullmatch(r'assets/(\d+)(?:/(\d+)/(download|preview|changes|restore))?',action)
-        require(match,404,'Nie znaleziono zasobu.')
+        require(match,404,'Asset not found.')
         asset, num, op = match.groups()
         if not op and req.method == 'GET':
             obj = db.execute('SELECT * FROM assets WHERE id=? AND room=?',(asset,room)).fetchone()
-            require(obj,404,'Nie znaleziono zasobu.')
+            require(obj,404,'Asset not found.')
             history = rows(db.execute('SELECT num,author,created,note,size,lang FROM versions WHERE asset=? ORDER BY num DESC',(asset,)))
             return {**dict(obj),'history':history}
         row, manifest = assets.snapshot(db,room,asset,num)
@@ -343,8 +343,8 @@ class App:
             snippet = None
             if row['kind'] == 'code':
                 snippet = assets.get_blob(db, room, manifest[assets.CODE_PATH]).decode()
-            return assets.revision(db,room,asset,member,now,f'Przywrócono v{num}',manifest,row['size'],snippet,row['lang'])
-        require(req.method == 'GET' and op != 'restore',405,'Nieobsługiwana metoda.')
+            return assets.revision(db,room,asset,member,now,f'Restored v{num}',manifest,row['size'],snippet,row['lang'])
+        require(req.method == 'GET' and op != 'restore',405,'Method not allowed.')
         if op == 'changes':
             old = assets.snapshot(db,room,asset,int(num)-1)[1] if int(num)>1 else {}
             if path:
@@ -355,7 +355,7 @@ class App:
         if not path and row['kind'] != 'folder':
             path = next(iter(manifest))
         if path:
-            require(manifest.get(path),404,'Nie znaleziono pliku.')
+            require(manifest.get(path),404,'File not found.')
             if op == 'preview':
                 if row['kind'] == 'code':
                     return {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}

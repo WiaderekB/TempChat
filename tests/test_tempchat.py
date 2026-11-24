@@ -101,12 +101,14 @@ class TempChatTest(unittest.TestCase):
         for path in ('/', '/admin', '/r/001234', '/app.js', '/files.js', '/ui.js', '/style.css'):
             with self.subTest(path=path):
                 self.assertTrue(self.call(self.ala, 200, 'GET', path))
+        self.assertIn(b'<html lang="en">', self.call(self.ala, 200, 'GET', '/'))
         self.assertEqual(self.call(self.ala, 200, 'GET', '/api/health'), {'ok': True})
 
     def test_admin_access_and_origin(self):
         path = '/api/admin/login'
         self.call(self.ala, 401, 'GET', '/api/admin/rooms')
-        self.call(self.ala, 401, 'POST', path, {'password': 'złe hasło'})
+        rejected = self.call(self.ala, 401, 'POST', path, {'password': 'złe hasło'})
+        self.assertEqual(rejected['error'], 'Incorrect admin password.')
         self.call(self.ala, 403, 'POST', path, {'password': PASSWORD}, origin='https://other.example.test')
         status, _, headers = self.ala.call('POST', path, {'password': PASSWORD})
         self.assertEqual(status, 200)
@@ -129,6 +131,7 @@ class TempChatTest(unittest.TestCase):
         self.assertNotIn('sender', chat[0])
         snippets = self.call(self.ala, 200, 'GET', base + 'catalog')['codes']
         self.assertEqual(snippets[0]['id'], chat[1]['asset'])
+        self.assertEqual(snippets[0]['name'], 'Code snippet')
         item = self.call(self.ala, 200, 'GET', base + f'code/{chat[1]["id"]}')
         self.assertEqual(item['body'], 'print("dzień dobry")\n')
         self.assertNotIn('sender', item)
@@ -161,6 +164,7 @@ class TempChatTest(unittest.TestCase):
         self.assertEqual([(row['num'], row['lang']) for row in history], [(2, 'js'), (1, 'python')])
         self.assertEqual(history[0]['note'], 'Zmiana języka')
         diff = self.call(self.ala, 200, 'GET', url + '/2/changes?path=fragment')['text']
+        self.assertTrue(diff.startswith('--- previous\n+++ selected\n'))
         self.assertIn('-print(1)\n+console.log(2)', diff)
         self.assertEqual(self.call(self.ala, 200, 'POST', url + '/1/restore')['num'], 3)
         restored = self.call(self.ala, 200, 'GET', url + '/3/preview')
