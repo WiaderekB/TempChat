@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from http.cookies import SimpleCookie
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlsplit
 from wsgiref.util import setup_testing_defaults
 
@@ -86,9 +87,9 @@ class TempChatTest(unittest.TestCase):
         self.assertEqual(status, expected, body if type(body) is not bytes else body[:150])
         return body
 
-    def room(self):
+    def room(self, hours=24):
         self.call(self.admin, 200, 'POST', '/api/admin/login', {'password': PASSWORD})
-        room = self.call(self.admin, 200, 'POST', '/api/admin/rooms', {'title': 'Projekt', 'hours': 24})
+        room = self.call(self.admin, 200, 'POST', '/api/admin/rooms', {'title': 'Projekt', 'hours': hours})
         self.code = room['code']
         self.base = '/api/room/' + self.code + '/'
         self.call(self.ala, 200, 'POST', self.base + 'join', {'nick': 'Ala'})
@@ -284,8 +285,9 @@ class TempChatTest(unittest.TestCase):
         extended = self.call(self.admin, 200, 'PATCH', path, {'hours': 36})['room']
         self.assertEqual(extended, {**renamed, 'hours': 36, 'expires': renamed['expires'] + 12 * 3600})
         self.call(self.admin, 400, 'PATCH', path, {})
-        self.call(self.admin, 400, 'PATCH', path, {'title': 'Rejected', 'hours': 1})
+        self.call(self.admin, 400, 'PATCH', path, {'title': 'Rejected', 'hours': 0})
         self.assertEqual(self.call(self.admin, 200, 'GET', path), extended)
+        self.assertEqual(self.call(self.admin, 200, 'PATCH', path, {'hours': 1})['room']['hours'], 1)
 
         self.call(self.admin, 200, 'POST', '/api/admin/logout')
         self.call(self.admin, 401, 'GET', path)
@@ -293,7 +295,7 @@ class TempChatTest(unittest.TestCase):
     def test_retention_rejoin_restart_and_sweep(self):
         base = self.room()
         path = '/api/admin/rooms/' + self.code
-        self.call(self.admin, 400, 'PATCH', path, {'hours': 23})
+        self.call(self.admin, 400, 'PATCH', path, {'hours': 0})
         self.call(self.admin, 200, 'PATCH', path, {'hours': 36})
         self.save(make_packet('file.txt', 'file', {'file.txt': b'content'}))
         self.call(self.ala, 200, 'POST', base + 'leave')
@@ -307,3 +309,26 @@ class TempChatTest(unittest.TestCase):
             self.app.clean(db, room['expires'])
             self.assertFalse(db.execute('SELECT 1 FROM blobs').fetchone())
         self.call(self.ola, 404, 'GET', base + 'messages')
+
+    def test_one_hour_retention_starts_when_the_last_participant_leaves(self):
+        joined_at = 1_700_000_000
+        with patch('server.time.time', return_value=joined_at):
+            base = self.room(hours=1)
+            self.call(self.admin, 400, 'POST', '/api/admin/rooms', {'title': 'Too short', 'hours': 0})
+            self.call(self.ola, 200, 'POST', base + 'join', {'nick': 'Ola'})
+            self.save(make_packet('file.txt', 'file', {'file.txt': b'content'}))
+            path = '/api/admin/rooms/' + self.code
+            initial_expiry = self.call(self.admin, 200, 'GET', path)['expires']
+
+        left_at = joined_at + 20
+        with patch('server.time.time', return_value=left_at):
+            self.call(self.ala, 200, 'POST', base + 'leave')
+            self.assertEqual(self.call(self.admin, 200, 'GET', path)['expires'], initial_expiry)
+            self.call(self.ola, 200, 'POST', base + 'leave')
+            self.assertEqual(self.call(self.admin, 200, 'GET', path)['expires'], left_at + 3600)
+
+        with closing(self.app.connect()) as db:
+            self.app.clean(db, left_at + 3599)
+            self.assertTrue(db.execute('SELECT 1 FROM blobs').fetchone())
+            self.app.clean(db, left_at + 3600)
+            self.assertFalse(db.execute('SELECT 1 FROM blobs').fetchone())

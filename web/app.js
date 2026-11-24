@@ -496,7 +496,7 @@ function changeRetention(room) {
   const input = element('input');
   input.id = 'retention';
   input.type = 'number';
-  input.min = '24';
+  input.min = '1';
   input.max = '8760';
   input.required = true;
   input.value = room.hours;

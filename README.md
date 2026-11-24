@@ -7,7 +7,7 @@ Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Admi
 - Historia wersji, podgląd tekstu, lista zmian w folderze i porównanie tekstu. Przywrócenie zapisuje kolejną wersję.
 - Panel administratora pod `/admin` pozwala utworzyć pokój, zmienić czas przechowywania i zamknąć pokój z natychmiastowym usunięciem danych.
 
-Pokój pozostaje dostępny po rozłączeniu ostatniego uczestnika. Domyślnie wygasa po 24 godzinach bez osób online. Pole retencji w panelu przyjmuje wartości od 24 do 8760 godzin. Zamknięcie lub wygaśnięcie usuwa z bazy wiadomości, fragmenty kodu, pliki, wersje i sesje uczestników. Pobrane kopie pozostają na urządzeniach uczestników. Pełne puste katalogi można przesłać przez przeciągnięcie folderu lub systemowy wybór katalogu w przeglądarkach obsługujących File System Access API. Zastępczy selektor folderu opiera się na liście plików, więc pomija puste katalogi.
+Pokój pozostaje dostępny po rozłączeniu ostatniego uczestnika. Domyślnie wygasa po 24 godzinach bez osób online. Pole retencji w panelu przyjmuje wartości od 1 do 8760 godzin. Zamknięcie lub wygaśnięcie usuwa z bazy wiadomości, fragmenty kodu, pliki, wersje i sesje uczestników. Pobrane kopie pozostają na urządzeniach uczestników. Pełne puste katalogi można przesłać przez przeciągnięcie folderu lub systemowy wybór katalogu w przeglądarkach obsługujących File System Access API. Zastępczy selektor folderu opiera się na liście plików, więc pomija puste katalogi.
 
 Limit jednej przesyłki wynosi 64 MiB i 2048 elementów. Limit unikatowej zawartości plikowej wynosi 512 MiB na pokój. Dane są zapisywane w lokalnym SQLite na nazwanym wolumenie Dockera.
 

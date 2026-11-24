@@ -41,7 +41,7 @@ def field(data, key, limit):
 
 def retention(data):
     hours = data.get('hours',24)
-    require(type(hours) is int and 24 <= hours <= 8760, 400, 'Choose a retention period between 24 and 8,760 hours.')
+    require(type(hours) is int and 1 <= hours <= 8760, 400, 'Choose a retention period between 1 and 8,760 hours.')
     return hours
 
 
