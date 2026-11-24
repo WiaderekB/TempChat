@@ -97,6 +97,89 @@ function sourcePreview(text, language) {
   return scroll;
 }
 
+function codeEditor(text, language, fileLanguage = '') {
+  const panel = element('div', '', 'editor-panel');
+  const toolbar = element('div', '', 'editor-toolbar');
+  const label = element('label', 'Code');
+  label.htmlFor = 'version-code';
+  toolbar.append(label, language ?? element('span', languageLabel(fileLanguage), 'muted'));
+
+  const grid = element('div', '', 'editor-grid');
+  const gutter = element('pre', '', 'editor-gutter');
+  const input = element('div', '', 'editor-input');
+  const backdrop = element('pre');
+  const highlighted = element('code');
+  const field = element('textarea');
+  field.id = label.htmlFor;
+  field.value = text;
+  field.maxLength = language ? 64000 : 256 * 1024;
+  field.required = Boolean(language);
+  field.wrap = 'off';
+  field.spellcheck = false;
+  field.autocapitalize = 'off';
+  field.autocomplete = 'off';
+  backdrop.setAttribute('aria-hidden', 'true');
+  gutter.setAttribute('aria-hidden', 'true');
+  backdrop.append(highlighted);
+  input.append(backdrop, field);
+  grid.append(gutter, input);
+  const status = element('div', '', 'editor-status');
+  const position = element('span');
+  status.append(position, element('span', 'UTF-8'));
+  panel.append(toolbar, grid, status);
+
+  let count = 0;
+  let numbers = [];
+  let selectedLine = 0;
+
+  function scroll() {
+    gutter.scrollTop = backdrop.scrollTop = field.scrollTop;
+    backdrop.scrollLeft = field.scrollLeft;
+  }
+
+  function cursor() {
+    const before = field.value.slice(0, field.selectionDirection === 'backward' ? field.selectionStart : field.selectionEnd);
+    const line = before.split('\n').length;
+    position.textContent = 'Ln ' + line + ', Col ' + (before.length - before.lastIndexOf('\n'));
+    if (line !== selectedLine) {
+      selectedLine = line;
+      const current = element('span', String(line), 'editor-current');
+      gutter.replaceChildren(numbers.slice(0, line - 1).join('\n') + (line > 1 ? '\n' : ''),
+        current, '\n' + numbers.slice(line).join('\n'), '\n');
+      scroll();
+    }
+  }
+
+  function paint() {
+    highlighted.replaceChildren();
+    highlightSource(highlighted, field.value, language?.value ?? fileLanguage);
+    highlighted.append('\n');
+    const nextCount = field.value.split('\n').length;
+    if (count !== nextCount) {
+      count = nextCount;
+      numbers = Array.from({ length: count }, (_, index) => index + 1);
+      selectedLine = 0;
+    }
+    cursor();
+    scroll();
+  }
+
+  field.addEventListener('input', paint);
+  field.addEventListener('scroll', scroll);
+  field.addEventListener('selectionchange', cursor);
+  field.addEventListener('click', cursor);
+  field.addEventListener('keyup', cursor);
+  field.addEventListener('keydown', (event) => {
+    if (!event.isComposing && (event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+      event.preventDefault();
+      field.form.requestSubmit();
+    }
+  });
+  language?.addEventListener('change', paint);
+  paint();
+  return { panel, field };
+}
+
 function pagedList(list, items, createRow) {
   let offset = 0;
   let footer;
@@ -176,17 +259,23 @@ function tablePreview(data) {
   }
 }
 
-function diffCell(line, state = '', prefix = '') {
+function diffCell(line, state = '', prefix = '', parts = [], numbers = [line?.[0]]) {
   const cell = element('div', '', 'diff-cell' + (state ? ' ' + state : ''));
-  const number = element('span', line ? String(line[0]) : '', 'diff-number');
+  for (const number of numbers) cell.append(element('span', String(number ?? ''), 'diff-number'));
   const marker = element('span', line ? prefix : '', 'diff-marker');
   marker.setAttribute('aria-hidden', 'true');
-  cell.append(number, marker, element('code', line?.[1] ?? ''));
+  const code = element('code');
+  if (parts.length) {
+    for (const [text, changed] of parts) code.append(changed ? element('mark', text, 'diff-word') : text);
+  } else {
+    code.textContent = line?.[1] ?? '';
+  }
+  cell.append(marker, code);
   return cell;
 }
 
 function diffContent(data, from, version, split) {
-  const result = element('div', '', 'asset-diff');
+  const result = element('div', '', split ? 'asset-diff' : 'asset-diff diff-unified');
   if (data.notice) {
     result.append(element('p', data.notice, 'asset-empty'));
     return result;
@@ -198,21 +287,28 @@ function diffContent(data, from, version, split) {
   }
   for (const [index, block] of data.blocks.entries()) {
     if (index) result.append(element('div', 'Unchanged lines omitted', 'diff-gap'));
+    const additions = [];
+    const appendAdditions = () => {
+      result.append(...additions);
+      additions.length = 0;
+    };
     for (const row of block) {
       if (split) {
         const line = element('div', '', 'diff-grid');
         const leftStyle = row.before ? (row.changed ? 'diff-old' : '') : 'diff-blank';
         const rightStyle = row.after ? (row.changed ? 'diff-new' : '') : 'diff-blank';
-        line.append(diffCell(row.before, leftStyle, row.changed ? '−' : ''),
-          diffCell(row.after, rightStyle, row.changed ? '+' : ''));
+        line.append(diffCell(row.before, leftStyle, row.changed ? '−' : '', row.words?.before),
+          diffCell(row.after, rightStyle, row.changed ? '+' : '', row.words?.after));
         result.append(line);
       } else if (row.changed) {
-        if (row.before) result.append(diffCell(row.before, 'diff-old', '−'));
-        if (row.after) result.append(diffCell(row.after, 'diff-new', '+'));
+        if (row.before) result.append(diffCell(row.before, 'diff-old', '−', row.words?.before, [row.before[0], null]));
+        if (row.after) additions.push(diffCell(row.after, 'diff-new', '+', row.words?.after, [null, row.after[0]]));
       } else {
-        result.append(diffCell(row.after));
+        appendAdditions();
+        result.append(diffCell(row.after, '', '', [], [row.before[0], row.after[0]]));
       }
     }
+    appendAdditions();
   }
   return result;
 }
@@ -234,6 +330,7 @@ export function assetBrowser(base, afterWrite) {
   let assetCache;
   let treeCache;
   let active;
+  let compiledPdf;
   let split = !window.matchMedia('(max-width: 640px)').matches;
 
   function open(id, version) {
@@ -241,6 +338,10 @@ export function assetBrowser(base, afterWrite) {
   }
 
   function navigate(hash) {
+    if (hash !== activeHash && compiledPdf) {
+      compiledPdf.dispose();
+      compiledPdf = undefined;
+    }
     const route = readRoute(hash);
     if (!route) {
       if (activeHash) {
@@ -301,7 +402,6 @@ export function assetBrowser(base, afterWrite) {
       if (!revision) throw new Error('Version not found.');
       const prefix = url + '/' + route.version;
       const folder = asset.kind === 'folder';
-      if (route.mode === 'edit' && asset.kind !== 'code') route.mode = 'preview';
       const comparing = route.mode === 'changes';
       let index;
       if (folder) {
@@ -325,6 +425,9 @@ export function assetBrowser(base, afterWrite) {
       } else {
         route.path = '';
       }
+      if (route.mode === 'edit' && asset.kind !== 'code' && (
+        !route.path || index?.nodes.get(route.path)?.dir || route.version !== asset.history[0].num
+      )) route.mode = 'preview';
       const canonical = assetHash(route);
       if (canonical !== activeHash) {
         activeHash = canonical;
@@ -390,7 +493,8 @@ export function assetBrowser(base, afterWrite) {
   toggleTree.addEventListener('click', () => setTreeOpen(!screen.classList.contains('tree-open')));
 
   function pathLink(node, label = node.name, className = 'tree-link') {
-    const control = link('', assetHash({ ...active.route, path: node.path }), className);
+    const { route } = active;
+    const control = link('', assetHash({ ...route, path: node.path, mode: route.mode === 'edit' ? 'preview' : route.mode }), className);
     const name = element('span', label, 'tree-name');
     control.title = node.path;
     control.append(icon(node.dir ? 'folder' : 'file'), name);
@@ -419,7 +523,7 @@ export function assetBrowser(base, afterWrite) {
       tree.replaceChildren(matches.length ? list : element('p', 'No matching paths.', 'asset-empty'));
       return;
     }
-    const root = link('Folder root', assetHash({ ...route, path: '' }), 'tree-root');
+    const root = link('Folder root', assetHash({ ...route, path: '', mode: route.mode === 'edit' ? 'preview' : route.mode }), 'tree-root');
     if (!route.path) root.setAttribute('aria-current', 'page');
     tree.replaceChildren(root, renderBranches(index.root.children));
 
@@ -473,7 +577,7 @@ export function assetBrowser(base, afterWrite) {
       const divider = element('span', '/', 'path-divider');
       divider.setAttribute('aria-hidden', 'true');
       path.append(divider, position === segments.length - 1 ? element('span', segment, 'path-current')
-        : link(segment, assetHash({ ...route, path: parent }), 'path-link'));
+        : link(segment, assetHash({ ...route, path: parent, mode: route.mode === 'edit' ? 'preview' : route.mode }), 'path-link'));
     }
     const node = index?.nodes.get(route.path);
     if (route.path) pathActions.append(button('Copy path', () => copyText(route.path, 'Path copied.')));
@@ -530,17 +634,20 @@ export function assetBrowser(base, afterWrite) {
     }
 
     content.replaceChildren(element('p', 'Loading file…', 'asset-empty'));
-    const preview = await request(prefix + '/preview' + queryPath(route.path));
+    const editingFile = route.mode === 'edit' && asset.kind === 'folder';
+    const preview = await request(prefix + (editingFile ? '/edit' : '/preview') + queryPath(route.path));
     if (ticket !== generation) return;
+    const filename = node?.name ?? asset.name;
+    const extension = filename.includes('.') ? filename.split('.').at(-1).toLowerCase() : '';
     if (route.mode === 'edit') {
-      renderEditor(preview);
+      renderEditor(preview, ticket, editingFile ? extension : undefined);
       return;
     }
-    if (preview.type === 'binary') {
+    const binary = preview.type === 'binary';
+    if (binary && !preview.latex) {
       content.replaceChildren(element('p', preview.text, 'asset-empty'));
       return;
     }
-    const filename = node?.name ?? asset.name;
     if (preview.type === 'image') {
       const image = element('img', '', 'asset-image');
       image.alt = filename;
@@ -550,7 +657,6 @@ export function assetBrowser(base, afterWrite) {
       content.replaceChildren(frame);
       return;
     }
-    const extension = filename.includes('.') ? filename.split('.').at(-1).toLowerCase() : '';
     const language = preview.lang ?? extension;
     const markdown = preview.type === 'text' && asset.kind !== 'code' && ['md', 'markdown'].includes(extension);
     const table = preview.type === 'table';
@@ -559,7 +665,11 @@ export function assetBrowser(base, afterWrite) {
     const label = preview.type === 'zip' ? 'ZIP contents' : table ? extension.toUpperCase() + ' · ' + preview.rows.length + ' rows'
       : [markdown ? 'Markdown' : languageLabel(language), lineCount(preview.text) + ' lines'].filter(Boolean).join(' · ');
     actions.append(element('span', label, 'muted'));
-    const copy = button('Copy', () => copyText(preview.text, 'Copied.'));
+    if (preview.editable && route.version === asset.history[0].num) {
+      actions.append(link('Edit file', assetHash({ ...route, mode: 'edit' })));
+    }
+    const source = () => binary ? element('p', preview.text, 'asset-empty')
+      : sourcePreview(preview.text, language);
     if (markdown || table) {
       const flip = button('Source', () => {
         const showSource = flip.textContent === 'Source';
@@ -574,10 +684,78 @@ export function assetBrowser(base, afterWrite) {
       actions.append(flip);
       renderFormatted();
     } else {
-      body.append(sourcePreview(preview.text, language));
+      body.append(source());
     }
-    actions.append(copy);
-    content.replaceChildren(actions, body);
+    if (preview.latex) {
+      const engine = element('select', '', 'latex-engine');
+      engine.setAttribute('aria-label', 'LaTeX engine');
+      for (const [value, name] of [['pdflatex', 'pdfLaTeX'], ['xelatex', 'XeLaTeX']]) {
+        const option = element('option', name);
+        option.value = value;
+        engine.append(option);
+      }
+      const feedback = element('pre', '', 'latex-feedback error');
+      feedback.setAttribute('role', 'alert');
+      feedback.hidden = true;
+      let compiledEngine;
+      let showingPdf = false;
+      const toggle = button('Render PDF', async () => {
+        feedback.hidden = true;
+        if (showingPdf) {
+          showSource();
+          return;
+        }
+        if (compiledEngine !== engine.value) {
+          toggle.textContent = 'Compiling…';
+          engine.disabled = true;
+          const query = new URLSearchParams({ engine: engine.value });
+          if (route.path) query.set('path', route.path);
+          try {
+            const response = await fetch(prefix + '/latex?' + query, {
+              method: 'POST', headers: { 'X-TempChat': '1' },
+            });
+            if (!response.ok) {
+              const error = await response.json().catch(() => null);
+              throw new Error(error?.error ?? 'The compiler did not return a PDF.');
+            }
+            const pdf = await response.blob();
+            const { pdfPreview } = await import('./pdf-preview.js');
+            if (ticket !== generation) return;
+            if (pdf.type !== 'application/pdf') throw new Error('The compiler did not return a PDF.');
+            compiledPdf?.dispose();
+            compiledPdf = pdfPreview(pdf, filename.replace(/\.tex$/i, '') + '.pdf');
+            compiledEngine = engine.value;
+          } catch (error) {
+            if (ticket === generation) {
+              feedback.textContent = error.message;
+              feedback.hidden = false;
+              toggle.textContent = 'Render PDF';
+            }
+            return;
+          } finally {
+            engine.disabled = false;
+          }
+        }
+        showingPdf = true;
+        toggle.textContent = 'Source';
+        body.replaceChildren(compiledPdf.panel);
+      });
+      engine.addEventListener('change', () => {
+        feedback.hidden = true;
+        if (showingPdf) showSource();
+      });
+      actions.append(engine, toggle);
+      content.replaceChildren(actions, feedback, body);
+
+      function showSource() {
+        showingPdf = false;
+        toggle.textContent = compiledEngine === engine.value ? 'View PDF' : 'Render PDF';
+        body.replaceChildren(source());
+      }
+    } else {
+      content.replaceChildren(actions, body);
+    }
+    if (!binary) actions.append(button('Copy', () => copyText(preview.text, 'Copied.')));
 
     function renderFormatted() {
       if (table) {
@@ -610,34 +788,28 @@ export function assetBrowser(base, afterWrite) {
     }
   }
 
-  function renderEditor(preview) {
-    const { asset, route } = active;
+  function renderEditor(preview, ticket, fileLanguage) {
+    const { asset, route, prefix } = active;
+    const editingFile = asset.kind === 'folder';
     const form = element('form', '', 'dialog-form asset-editor');
-    const language = $('language').cloneNode(true);
-    language.id = 'version-language';
-    selectLanguage(language, preview.lang);
-    const code = element('textarea');
-    code.id = 'version-code';
-    code.value = preview.text;
-    code.rows = 12;
-    code.maxLength = 64000;
-    code.required = true;
-    code.spellcheck = false;
-    code.className = 'mono';
+    let language;
+    if (!editingFile) {
+      language = $('language').cloneNode(true);
+      language.id = 'version-language';
+      language.setAttribute('aria-label', 'Language');
+      selectLanguage(language, preview.lang);
+    }
+    const { panel, field: code } = codeEditor(preview.text, language, fileLanguage);
     const note = element('input');
     note.id = 'version-note';
     note.maxLength = 200;
-    for (const [name, control] of [
-      ['Language', language], ['Code', code], ['Change note (optional)', note],
-    ]) {
-      const label = element('label', name);
-      label.htmlFor = control.id;
-      form.append(label, control);
-    }
+    const noteLabel = element('label', 'Change note (optional)');
+    noteLabel.htmlFor = note.id;
+    form.append(panel, noteLabel, note);
     const actions = element('div', '', 'small-actions');
     const submit = element('button', 'Save version', 'primary');
     submit.type = 'submit';
-    const error = element('p', '', 'error');
+    const error = element('div', '', 'error');
     error.setAttribute('role', 'alert');
     error.hidden = true;
     actions.append(submit, link('Cancel', assetHash({ ...route, mode: 'preview' })));
@@ -645,14 +817,23 @@ export function assetBrowser(base, afterWrite) {
     content.replaceChildren(form);
     code.focus();
     formAction(form, async () => {
-      const saved = await request(base + 'messages', {
+      const endpoint = editingFile ? prefix + '/edit' + queryPath(route.path) : base + 'messages';
+      const data = editingFile ? { text: code.value, note: note.value }
+        : { kind: 'code', asset: asset.id, body: code.value, lang: language.value, note: note.value };
+      const saved = await request(endpoint, {
         method: 'POST',
-        data: { kind: 'code', asset: asset.id, body: code.value, lang: language.value, note: note.value },
+        data,
       });
       afterWrite();
-      open(asset.id, saved.num);
-    }, (message) => {
-      error.textContent = message;
+      if (ticket === generation) go({ version: saved.num, mode: 'preview' });
+    }, (message, _isError, failure) => {
+      error.replaceChildren(element('p', message));
+      if (editingFile && failure?.status === 409) {
+        error.append(button('Open latest version', async () => {
+          assetCache = await request(base + 'assets/' + asset.id);
+          if (ticket === generation) go({ version: assetCache.history[0].num, mode: 'preview' });
+        }));
+      }
       error.hidden = false;
     });
   }

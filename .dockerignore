@@ -3,6 +3,7 @@
 !requirements.txt
 !server.py
 !assets.py
+!tex_worker.py
 !schema.sql
 !web/
 !web/**

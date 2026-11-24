@@ -20,14 +20,19 @@ from wsgiref.util import FileWrapper
 
 import assets
 from assets import Problem, require
+from tex_worker import ENGINES, request_pdf
 
 ROOT = Path(__file__).resolve().parent
 PRESENCE = 90
 STATIC = {'/': 'index.html', '/admin': 'index.html', '/app.js': 'app.js',
           '/files.js': 'files.js', '/ui.js': 'ui.js', '/style.css': 'style.css',
-          '/asset-view.js': 'asset-view.js',
-          '/markdown.mjs': 'markdown.mjs', '/vendor/markdown-it.mjs': 'vendor/markdown-it.mjs'}
-MIME = {'.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css'}
+          '/asset-view.js': 'asset-view.js', '/pdf-preview.js': 'pdf-preview.js',
+          '/markdown.mjs': 'markdown.mjs', '/vendor/markdown-it.mjs': 'vendor/markdown-it.mjs',
+          '/vendor/pdfjs/pdf.min.mjs': 'vendor/pdfjs/pdf.min.mjs',
+          '/vendor/pdfjs/pdf.worker.min.mjs': 'vendor/pdfjs/pdf.worker.min.mjs',
+          '/vendor/fonts/FiraCode-Regular.woff2': 'vendor/fonts/FiraCode-Regular.woff2'}
+MIME = {'.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript',
+        '.css': 'text/css', '.woff2': 'font/woff2'}
 
 
 def rows(cursor):
@@ -66,8 +71,8 @@ class Request:
         item = self.cookies.get(key)
         return token_hash(item.value if item else '')
 
-    def body(self):
-        require(0 < self.length <= 300000, 413, 'Invalid request size.')
+    def body(self, limit=300000):
+        require(0 < self.length <= limit, 413, 'Invalid request size.')
         value = json.loads(self.stream.read(self.length))
         require(isinstance(value,dict), 400, 'Invalid request data.')
         return value
@@ -77,7 +82,7 @@ class Request:
 
 
 class App:
-    def __init__(self, directory, password, origin, sweep=True, trusted_proxy=''):
+    def __init__(self, directory, password, origin, sweep=True, trusted_proxy='', tex_socket=''):
         require(12 <= len(password) <= 1024, 500, 'Set ADMIN_PASSWORD to between 12 and 1,024 characters.')
         self.password = token_hash(password)
         self.origin = origin.rstrip('/')
@@ -87,6 +92,8 @@ class App:
         self.limits = {}
         self.limit_lock = threading.Lock()
         self.uploads = threading.BoundedSemaphore(3)
+        self.tex_socket = tex_socket
+        self.tex_job = threading.BoundedSemaphore()
         with closing(self.connect()) as db:
             db.executescript((ROOT/'schema.sql').read_text())
             with db:
@@ -181,7 +188,10 @@ class App:
         path, method = req.path, req.method
         if method == 'GET' and (path in STATIC or re.fullmatch(r'/r/[0-9]{6}',path)):
             name = STATIC.get(path, 'index.html')
-            return MIME[Path(name).suffix] + '; charset=utf-8', (ROOT/'web'/name).read_bytes()
+            mime = MIME[Path(name).suffix]
+            if mime.startswith('text/'):
+                mime += '; charset=utf-8'
+            return mime, (ROOT/'web'/name).read_bytes()
         if path == '/api/health' and method == 'GET':
             with closing(self.connect()) as db:
                 db.execute('SELECT code FROM rooms LIMIT 1').fetchone()
@@ -207,7 +217,8 @@ class App:
                     return assets.save(db,room,member,saved_at,packet)
                 finally:
                     self.uploads.release()
-            db.execute('BEGIN IMMEDIATE' if method != 'GET' or action == 'state' else 'BEGIN')
+            compiling = method == 'POST' and action.endswith('/latex')
+            db.execute('BEGIN IMMEDIATE' if (method != 'GET' and not compiling) or action == 'state' else 'BEGIN')
             if action == 'join' and method == 'POST':
                 self.throttle(req,'join',45)
                 self.room(db,room,now)
@@ -344,7 +355,7 @@ class App:
         raise Problem(404,'Not found.')
 
     def asset_action(self,db,req,room,member,now,action):
-        match = re.fullmatch(r'assets/(\d+)(?:/(\d+)/(download|preview|changes|restore))?',action)
+        match = re.fullmatch(r'assets/(\d+)(?:/(\d+)/(download|preview|changes|restore|latex|edit))?',action)
         require(match,404,'Asset not found.')
         asset, num, op = match.groups()
         if not op and req.method == 'GET':
@@ -354,6 +365,18 @@ class App:
             return {**dict(obj),'history':history}
         row, manifest = assets.snapshot(db,room,asset,num)
         path = req.arg('path')
+        if op == 'latex':
+            require(req.method == 'POST', 405, 'Method not allowed.')
+            return self.render_latex(db, req, room, row, manifest, path)
+        if op == 'edit':
+            require(row['kind'] == 'folder' and manifest.get(path), 404, 'File not found.')
+            if req.method == 'POST':
+                data = req.body(6 * assets.EDIT_LIMIT + 4096)
+                return assets.edit_text(db, room, row, manifest, path, member, now, data.get('text'), data.get('note', ''))
+            require(req.method == 'GET', 405, 'Method not allowed.')
+            text = assets.editable_text(db, room, manifest[path])
+            require(text is not None, 422, 'Only UTF-8 text files up to 256 KiB can be edited.')
+            return {'text': text}
         if op == 'restore' and req.method == 'POST':
             snippet = None
             if row['kind'] == 'code':
@@ -378,8 +401,16 @@ class App:
             require(manifest.get(path),404,'File not found.')
             if op == 'preview':
                 if row['kind'] == 'code':
-                    return {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}
-                return assets.preview(db, room, manifest[path], path)
+                    preview = {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}
+                else:
+                    preview = assets.preview(db, room, manifest[path], path)
+                    if row['kind'] == 'folder' and (preview['type'] == 'text' or (
+                        preview['type'] == 'table' and assets.editable_text(db, room, manifest[path]) is not None
+                    )):
+                        preview['editable'] = True
+                if self.tex_socket and self.is_latex(row, path):
+                    preview['latex'] = True
+                return preview
             payload = assets.get_blob(db,room,manifest[path])
             if row['kind'] == 'code':
                 suffix = '.tex' if row['lang'] in ('tex', 'latex') else '.txt'
@@ -394,10 +425,38 @@ class App:
         req.headers.append(('Content-Disposition',"attachment; filename*=UTF-8''"+quote(filename,safe='')))
         return 'application/octet-stream',payload
 
+    @staticmethod
+    def is_latex(row, path):
+        return row['lang'].lower() in ('tex', 'latex') if row['kind'] == 'code' else path.lower().endswith('.tex')
+
+    def render_latex(self, db, req, room, row, manifest, path):
+        path = path or (next(iter(manifest)) if row['kind'] != 'folder' else '')
+        require(manifest.get(path) and self.is_latex(row, path), 400, 'Select a .tex file or LaTeX snippet.')
+        require(self.tex_socket, 503, 'The LaTeX compiler is unavailable.')
+        engine = req.arg('engine', ENGINES[0])
+        require(engine in ENGINES, 400, 'Choose a LaTeX engine.')
+        require(self.tex_job.acquire(blocking=False), 503, 'Another document is compiling. Try again shortly.')
+        filename = row['name'] if row['kind'] == 'code' else path.split('/')[-1]
+        if row['kind'] != 'folder':
+            manifest = {'document.tex': manifest[path]}
+            path = 'document.tex'
+        try:
+            with assets.archive(db, room, '', manifest) as archive:
+                db.commit()
+                self.throttle(req, 'latex', 5)
+                pdf = request_pdf(self.tex_socket, archive, path, engine)
+            self.member(db, req, room, int(time.time()))
+        finally:
+            self.tex_job.release()
+        filename = (filename[:-4] if filename.lower().endswith('.tex') else filename) + '.pdf'
+        req.headers.append(('Content-Disposition', "attachment; filename*=UTF-8''" + quote(filename, safe='')))
+        return 'application/pdf', pdf
+
 
 def create():
     return App(os.getenv('DATA_DIR','data'), os.environ['ADMIN_PASSWORD'],
-               os.getenv('APP_URL','http://localhost:3087'), trusted_proxy=os.getenv('TRUSTED_PROXY', ''))
+               os.getenv('APP_URL','http://localhost:3087'), trusted_proxy=os.getenv('TRUSTED_PROXY', ''),
+               tex_socket=os.getenv('TEX_SOCKET', ''))
 
 
 if __name__ == '__main__':

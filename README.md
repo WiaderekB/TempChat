@@ -5,6 +5,7 @@ Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Admi
 - Czat z wyróżnieniem własnych wiadomości, rozwijanym podglądem długiego tekstu i licznikiem uczestników otwierającym ich listę.
 - Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Wyszukiwanie w galerii obejmuje nazwy zasobów i ścieżki w ich najnowszych wersjach. Przeglądarka zasobów ma też wyszukiwanie w wybranym folderze, podgląd tabel CSV i TSV oraz pobieranie pojedynczych plików i folderów jako ZIP.
 - Historia wersji i porównanie tekstu w dwóch kolumnach lub w jednym widoku. Przywrócenie zapisuje kolejną wersję.
+- Edytor kodu z numerami linii, kolorowaniem składni i ligaturami Fira Code. Pliki tekstowe UTF-8 do 256 KiB można edytować w najnowszej wersji folderu. Zapis zmienionego pliku tworzy kolejną wersję folderu. Jeśli ktoś wcześniej zapisze nową wersję, edytor pozwala przejść do aktualnej wersji.
 - Panel administratora pod `/admin` pozwala utworzyć pokój, zmienić czas przechowywania i zamknąć pokój z natychmiastowym usunięciem danych.
 
 Pokój pozostaje dostępny po rozłączeniu ostatniego uczestnika. Domyślnie wygasa po 24 godzinach bez osób online. Pole retencji w panelu przyjmuje wartości od 1 do 8760 godzin. Zamknięcie lub wygaśnięcie usuwa z bazy wiadomości, fragmenty kodu, pliki, wersje i sesje uczestników. Pobrane kopie pozostają na urządzeniach uczestników. Pełne puste katalogi można przesłać przez przeciągnięcie folderu lub systemowy wybór katalogu w przeglądarkach obsługujących File System Access API. Zastępczy selektor folderu opiera się na liście plików, więc pomija puste katalogi.
@@ -30,7 +31,15 @@ chmod 600 .env
 docker compose -p rooms up -d --build
 ```
 
-Przy aktualizacji przez Git pobierz zmiany i ponownie zbuduj obraz. Zachowaj wolumen `rooms_data`, aby przenieść istniejące pokoje do nowego kontenera.
+Przy aktualizacji przez Git pobierz zmiany i ponownie zbuduj obrazy. Zachowaj wolumen `rooms_data`, aby przenieść istniejące pokoje do nowego kontenera. W edytorze Portainera zastąp zawartość stacka aktualnym `portainer.yaml`, aby dodać usługę `tex`.
+
+## LaTeX
+
+Otwórz główny plik `.tex` projektu albo kompletny fragment LaTeX w galerii zasobów. Wybierz **pdfLaTeX** lub **XeLaTeX** i kliknij **Render PDF**. Możesz wyświetlić wynik, otworzyć go w osobnej karcie albo pobrać. Kompilacja używa plików z otwartej wersji folderu. Pliki dołączane przez dokument mogą znajdować się obok niego lub w katalogu głównym projektu.
+
+Obraz TeX Live zawiera m.in. AMS, `graphicx`, TikZ, pakiety naukowe, polskie wzorce dzielenia wyrazów i BibTeX. Własne pliki `.sty`, `.cls`, `.bib` oraz grafiki dodaj do folderu. Dostępne są pakiety z obrazu i z folderu. Usługa kompiluje bez dostępu do sieci, poleceń powłoki i wolumenu pokoi. Limit to 35 sekund na kompilację i 16 MiB na PDF. Bibliografie uruchamiane przez Biber oraz pakiety wymagające uruchamiania poleceń powłoki są poza obsługiwanym zestawem.
+
+Opcja **Render PDF** jest dostępna po uruchomieniu stacka w Dockerze. Samo uruchomienie lokalnego serwera Pythona udostępnia podgląd źródła.
 
 ## Nginx Proxy Manager
 

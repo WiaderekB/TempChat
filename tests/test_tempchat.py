@@ -102,11 +102,74 @@ class TempChatTest(unittest.TestCase):
 
     def test_static_pages_and_health(self):
         for path in ('/', '/admin', '/r/001234', '/app.js', '/asset-view.js', '/files.js', '/ui.js', '/style.css',
-                     '/markdown.mjs', '/vendor/markdown-it.mjs'):
+                     '/markdown.mjs', '/vendor/markdown-it.mjs', '/vendor/fonts/FiraCode-Regular.woff2',
+                     '/pdf-preview.js', '/vendor/pdfjs/pdf.min.mjs', '/vendor/pdfjs/pdf.worker.min.mjs'):
             with self.subTest(path=path):
                 self.assertTrue(self.call(self.ala, 200, 'GET', path))
         self.assertIn(b'<html lang="en">', self.call(self.ala, 200, 'GET', '/'))
         self.assertEqual(self.call(self.ala, 200, 'GET', '/api/health'), {'ok': True})
+
+    def test_edit_nested_file_creates_folder_version_without_replacing_unchanged_line(self):
+        base = self.room()
+        data = self.save(make_packet('Project', 'folder', {
+            'docs/example.txt': b'www\nSuper mega test hey!', 'docs/keep.txt': b'keep',
+            'image.dat': b'\0',
+        }))
+        url = base + f'assets/{data["asset"]}/'
+        query = '?path=docs/example.txt'
+        self.assertTrue(self.call(self.ala, 200, 'GET', url + '1/preview' + query)['editable'])
+        edit = self.call(self.ala, 200, 'GET', url + '1/edit' + query)
+        self.call(self.ola, 401, 'POST', url + '1/edit' + query, edit)
+        self.call(self.ala, 422, 'POST', url + '1/edit?path=image.dat', edit)
+        self.assertEqual(self.call(self.ala, 200, 'POST', url + '1/edit' + query, edit)['num'], 1)
+        edit['text'] += '\n\naaaa'
+        revision = self.call(self.ala, 200, 'POST', url + '1/edit' + query, edit)
+        self.assertEqual(revision['num'], 2)
+        self.call(self.ala, 409, 'POST', url + '1/edit' + query, {'text': 'stale edit'})
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '2/download?path=docs/keep.txt'), b'keep')
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '1/download' + query), b'www\nSuper mega test hey!')
+        self.assertEqual(self.call(self.ala, 200, 'GET', url + '2/download' + query), edit['text'].encode())
+        diff = self.call(self.ala, 200, 'GET', url + '2/changes' + query + '&format=split')
+        self.assertEqual(diff['blocks'][0][1], {
+            'before': [2, 'Super mega test hey!'], 'after': [2, 'Super mega test hey!'], 'changed': False,
+        })
+        self.assertEqual([item['after'] for item in diff['blocks'][0] if item['changed']], [[3, ''], [4, 'aaaa']])
+        self.call(self.ala, 200, 'POST', url + '2/edit' + query, {'text': edit['text'] + '\n'})
+        diff = self.call(self.ala, 200, 'GET', url + '3/changes' + query + '&format=split')
+        self.assertEqual(diff['notice'], 'Final newline added.')
+
+    def test_latex_compiles_the_selected_snapshot_with_its_dependencies(self):
+        base = self.room()
+        draft = b'first version'
+        project = {'chapters/main.tex': draft, 'figures/diagram.png': b'figure'}
+        created = self.save(make_packet('Project', 'folder', project))
+        self.save(make_packet('Project', 'folder', {**project, 'chapters/main.tex': b'new'}, mode='version'))
+        prefix = base + f'assets/{created["asset"]}/1/'
+        tex = '?path=chapters/main.tex'
+        self.assertNotIn('latex', self.call(self.ala, 200, 'GET', prefix + 'preview' + tex))
+        self.app.tex_socket = '/test/worker.sock'
+        self.assertTrue(self.call(self.ala, 200, 'GET', prefix + 'preview' + tex)['latex'])
+        self.call(self.ola, 401, 'POST', prefix + 'latex' + tex)
+        self.call(self.ala, 405, 'GET', prefix + 'latex' + tex)
+        self.call(self.ala, 400, 'POST', prefix + 'latex?path=figures/diagram.png')
+        self.call(self.ala, 400, 'POST', prefix + 'latex' + tex + '&engine=invalid')
+
+        def compile_version(socket_path, package, entry, engine):
+            self.assertEqual((socket_path, entry, engine), ('/test/worker.sock', 'chapters/main.tex', 'xelatex'))
+            with zipfile.ZipFile(package) as archive:
+                self.assertEqual({path: archive.read(path) for path in archive.namelist()}, project)
+            return b'%PDF-1.5'
+
+        with patch('server.request_pdf', side_effect=compile_version):
+            status, pdf, headers = self.ala.call('POST', prefix + 'latex' + tex + '&engine=xelatex')
+            self.assertEqual((status, pdf, headers['Content-Type']), (200, b'%PDF-1.5', 'application/pdf'))
+            self.assertTrue(headers['Content-Disposition'].endswith('main.pdf'))
+
+    def test_word_diff_marks_only_the_changed_text(self):
+        self.assertEqual(assets.diff_words('Zmień szerokość na 12.', 'Zmień szerokość na 18.'), {
+            'before': [['Zmień szerokość na ', False], ['12', True], ['.', False]],
+            'after': [['Zmień szerokość na ', False], ['18', True], ['.', False]],
+        })
 
     def test_admin_access_and_origin(self):
         path = '/api/admin/login'
@@ -268,7 +331,9 @@ class TempChatTest(unittest.TestCase):
         self.assertIn({'path': 'old.txt', 'state': 'removed', 'dir': False}, changes)
         diff = self.call(self.ala, 200, 'GET', url + '?format=split&from=1&path=src%2Fapp.js')
         self.assertEqual(diff['blocks'], [[
-            {'before': [1, 'const total = 1;'], 'after': [1, 'const total = 3;'], 'changed': True},
+            {'before': [1, 'const total = 1;'], 'after': [1, 'const total = 3;'], 'changed': True,
+             'words': {'before': [['const total = ', False], ['1', True], [';', False]],
+                       'after': [['const total = ', False], ['3', True], [';', False]]}},
             {'before': [2, 'return total;'], 'after': [2, 'return total;'], 'changed': False},
         ]])
         removed = self.call(self.ala, 200, 'GET', url + '?format=split&from=1&path=old.txt')

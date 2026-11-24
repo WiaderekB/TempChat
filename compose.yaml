@@ -2,6 +2,9 @@ services:
   tempchat:
     build:
       context: .
+      target: app
+    depends_on:
+      - tex
     restart: unless-stopped
     init: true
     ports:
@@ -9,9 +12,11 @@ services:
     environment:
       APP_URL: "${APP_URL:-https://tempchat.wiaderek.xyz}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:?Ustaw ADMIN_PASSWORD w zmiennych stacka}"
+      TEX_SOCKET: "/run/tex/compiler.sock"
       TRUSTED_PROXY: "${TRUSTED_PROXY:-}"
     volumes:
       - rooms_data:/data
+      - tex_socket:/run/tex:ro
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=768m,mode=1777
@@ -26,5 +31,26 @@ services:
       retries: 3
       start_period: 15s
 
+  tex:
+    build:
+      context: .
+      target: tex
+    restart: unless-stopped
+    init: true
+    network_mode: none
+    read_only: true
+    cpus: 1.0
+    mem_limit: 768m
+    pids_limit: 32
+    volumes:
+      - tex_socket:/run/tex
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 volumes:
   rooms_data:
+  tex_socket:

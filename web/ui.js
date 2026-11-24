@@ -47,7 +47,7 @@ export async function run(control, action, feedback = notify) {
   try {
     await action();
   } catch (error) {
-    feedback(error.message, true);
+    feedback(error.message, true, error);
   } finally {
     control.disabled = false;
   }

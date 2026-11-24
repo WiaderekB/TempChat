@@ -19,6 +19,7 @@ MAX_HEADER = 4 * MIB
 MAX_ENTRIES = 10000
 ROOM_BYTES = 512 * MIB
 CODE_PATH = 'fragment'
+EDIT_LIMIT = 256 * 1024
 SEARCH_PAGE = 60
 TABLE_PREVIEW_BYTES = 512 * 1024
 TABLE_ROWS = 1000
@@ -184,6 +185,38 @@ def get_blob(db, room, digest, limit=None):
     return row[0] if row else None
 
 
+def editable_text(db, room, digest):
+    data = get_blob(db, room, digest, EDIT_LIMIT)
+    if data is not None and b'\0' not in data:
+        try:
+            return data.decode()
+        except UnicodeError:
+            pass
+    return None
+
+
+def edit_text(db, room, row, manifest, path, member, now, text, note):
+    require(row['kind'] == 'folder' and manifest.get(path), 404, 'File not found.')
+    latest = db.execute('SELECT max(num) FROM versions WHERE asset=?', (row['asset'],)).fetchone()[0]
+    require(row['num'] == latest, 409, 'A newer version of this folder exists. Open the latest version before editing.')
+    original = editable_text(db, room, manifest[path])
+    require(original is not None, 422, 'Only UTF-8 text files up to 256 KiB can be edited.')
+    require(isinstance(text, str) and '\0' not in text, 400, 'Enter valid UTF-8 text.')
+    require(isinstance(note, str) and len(note) <= 200, 400, 'The version note is too long.')
+    if original.replace('\r\n', '\n').replace('\r', '\n') == text:
+        return {'asset': row['asset'], 'num': row['num']}
+    if '\r\n' in original and '\n' not in original.replace('\r\n', ''):
+        text = text.replace('\r\n', '\n').replace('\n', '\r\n')
+    encoded = text.encode()
+    require(len(encoded) <= EDIT_LIMIT, 413, 'A file edited here can contain up to 256 KiB.')
+    size = row['size'] - len(original.encode()) + len(encoded)
+    require(size <= MAX_BYTES, 413, 'The folder would exceed the 64 MiB limit.')
+    digest = hashlib.sha256(encoded).hexdigest()
+    store_blobs(db, room, {digest: encoded})
+    manifest[path] = digest
+    return revision(db, room, row['asset'], member, now, note.strip() or f'Edited {path}'[:200], manifest, size)
+
+
 def snapshot(db, room, asset, num):
     row = db.execute('SELECT v.*,a.name,a.kind FROM versions v JOIN assets a ON a.id=v.asset '
                      'WHERE a.room=? AND a.id=? AND v.num=?', (room,asset,num)).fetchone()
@@ -324,27 +357,54 @@ def changes(old, new, details=False):
 
 def diff_lines(db, room, old, new, path):
     require(path in old or path in new, 404, 'File not found.')
-    lines = []
+    lines, endings = [], []
     for version in (old,new):
         digest = version.get(path)
         data = get_blob(db, room, digest, 64 * 1024) if digest else b''
         if data is None or b'\0' in data:
             return None, 'A text diff is unavailable for this file.'
         try:
-            lines.append(data.decode().splitlines(keepends=True))
+            text = data.decode().replace('\r\n', '\n').replace('\r', '\n')
+            endings.append(text.endswith('\n'))
+            lines.append(text.removesuffix('\n').split('\n') if text else [])
         except UnicodeError:
             return None, 'Binary file.'
     if max(map(len, lines)) > 2000:
         return None, 'This file exceeds the 2,000-line diff limit.'
-    return lines, ''
+    message = ''
+    if lines[0] == lines[1] and old.get(path) != new.get(path):
+        if endings[0] != endings[1]:
+            message = 'Final newline added.' if endings[1] else 'Final newline removed.'
+        elif old.get(path) and new.get(path):
+            message = 'Line endings changed.'
+    return lines, message
 
 
 def diff_text(db, room, old, new, path):
     lines, notice = diff_lines(db, room, old, new, path)
     if notice:
         return notice
-    return ''.join(line if line.endswith('\n') else line+'\n' for line in
-                   difflib.unified_diff(*lines, fromfile='previous', tofile='selected')) or 'No text changes.'
+    return ''.join(line+'\n' for line in
+                   difflib.unified_diff(*lines, fromfile='previous', tofile='selected', lineterm='')) or 'No text changes.'
+
+
+def diff_words(before, after):
+    tokens = [re.findall(r'\w+|\s+|[^\w\s]', line) for line in (before, after)]
+    if max(map(len, tokens)) > 256:
+        return None
+    old, new = tokens
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    if not any(any(not token.isspace() for token in old[start:start + size])
+               for start, _, size in matcher.get_matching_blocks()):
+        return None
+    left, right = [], []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        changed = tag != 'equal'
+        if i1 != i2:
+            left.append([''.join(old[i1:i2]), changed])
+        if j1 != j2:
+            right.append([''.join(new[j1:j2]), changed])
+    return {'before': left, 'after': right}
 
 
 def diff_blocks(db, room, old, new, path):
@@ -359,11 +419,16 @@ def diff_blocks(db, room, old, new, path):
             left = enumerate(before[i1:i2], i1 + 1)
             right = enumerate(after[j1:j2], j1 + 1)
             for old_line, new_line in zip_longest(left, right):
-                block.append({
-                    'before': [old_line[0], old_line[1].rstrip('\r\n')] if old_line else None,
-                    'after': [new_line[0], new_line[1].rstrip('\r\n')] if new_line else None,
+                line = {
+                    'before': list(old_line) if old_line else None,
+                    'after': list(new_line) if new_line else None,
                     'changed': tag != 'equal',
-                })
+                }
+                if tag == 'replace' and old_line and new_line:
+                    words = diff_words(old_line[1], new_line[1])
+                    if words:
+                        line['words'] = words
+                block.append(line)
         blocks.append(block)
     return {'blocks': blocks, 'notice': '' if blocks else 'No text changes.'}
 
@@ -372,9 +437,11 @@ def archive(db, room, name, manifest):
     out = tempfile.TemporaryFile()
     try:
         with zipfile.ZipFile(out, 'w', zipfile.ZIP_STORED) as z:
-            z.writestr(name+'/', b'')
+            prefix = name+'/' if name else ''
+            if prefix:
+                z.writestr(prefix, b'')
             for path, digest in manifest.items():
-                full = name+'/'+path
+                full = prefix+path
                 if digest is None:
                     z.writestr(full+'/', b'')
                 else:
