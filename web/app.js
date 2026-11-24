@@ -7,6 +7,10 @@ const roomLink = (code) => '/r/' + code;
 const fullLink = (code) => new URL(roomLink(code), location.origin).href;
 const roomAPI = (code) => '/api/room/' + code + '/';
 const adminAPI = '/api/admin/';
+const digits = (value) => value.replace(/[^0-9]/g, '').slice(0, 6);
+const formatCode = (value) => value.length > 3 ? value.slice(0, 3) + ' - ' + value.slice(3) : value;
+const shortTime = new Intl.DateTimeFormat('pl-PL', { timeStyle: 'short' });
+const shortDay = new Intl.DateTimeFormat('pl-PL', { dateStyle: 'long' });
 
 function view(id) {
   for (const panel of viewIds) $(panel).hidden = panel !== id;
@@ -17,15 +21,23 @@ function view(id) {
 
 function showJoin(code = '', message = '') {
   view('join-view');
-  $('join-code').value = code;
+  $('join-code').value = formatCode(code);
   showError($('join-error'), message);
 }
 
+$('join-code').addEventListener('input', (event) => {
+  const field = event.currentTarget;
+  const left = digits(field.value.slice(0, field.selectionStart)).length;
+  field.value = formatCode(digits(field.value));
+  const position = left + (left > 3 ? 3 : 0);
+  field.setSelectionRange(position, position);
+});
+
 formAction($('join-form'), async () => {
   showError($('join-error'));
-  const code = $('join-code').value;
+  const code = digits($('join-code').value);
   await request(roomAPI(code) + 'join', { method: 'POST', data: { nick: $('join-nick').value } });
-  location.assign(roomLink(code));
+  location.assign(roomLink(code) + location.hash);
 }, (message) => showError($('join-error'), message));
 
 function activateRoom(code, initial) {
@@ -34,10 +46,12 @@ function activateRoom(code, initial) {
   const scroller = $('messages-scroll');
   const list = $('messages');
   const older = $('load-older');
+  const latest = $('jump-latest');
   const input = $('message-text');
   const form = $('message-form');
+  const chat = $('chat-screen');
+  const gallery = $('gallery-screen');
   const assets = resources(base, refreshSoon);
-  const pollDelay = 1800;
   let mode = 'text';
   let last = 0;
   let first = 0;
@@ -45,46 +59,137 @@ function activateRoom(code, initial) {
   let timer;
   let alive = true;
   let polling = false;
+  let savedScroll = 0;
+  let followLatest = true;
+  let people = [];
+  let peopleModal;
 
   function state(data) {
     $('room-title').textContent = data.room.title;
-    $('room-code').textContent = code;
-    $('current-user').textContent = data.nick;
+    $('room-code').textContent = formatCode(code);
     $('people-count').textContent = data.people.length;
-    const people = data.people.map((name) => {
+    $('show-people').setAttribute('aria-label', 'Uczestnicy: ' + data.people.length);
+    if (people.length !== data.people.length || people.some((name, i) => name !== data.people[i])) {
+      people = data.people;
+      if (peopleModal) renderPeople();
+    }
+  }
+
+  function renderPeople() {
+    const rows = people.map((name) => {
       const row = element('li');
       const dot = element('span', '', 'status-dot');
       dot.setAttribute('aria-hidden', 'true');
       row.append(dot, document.createTextNode(name));
       return row;
     });
-    $('people').replaceChildren(...people);
+    const peopleList = element('ul', '', 'people-list');
+    peopleList.append(...rows);
+    peopleModal.body.replaceChildren(peopleList);
   }
 
   function connected(flag) {
     $('connection').classList.toggle('offline', !flag);
-    $('connection-label').textContent = flag ? 'Połączono' : 'Ponawiam połączenie…';
+    const label = flag ? 'Połączono' : 'Ponawiam połączenie…';
+    $('connection-label').textContent = label;
+    $('connection').title = label;
   }
 
   function message(data) {
-    const row = element('li', '', 'message');
+    const row = element('li', '', 'message' + (data.mine ? ' is-mine' : ''));
+    const content = element('div', '', 'message-content' + (data.kind === 'code' ? ' has-code' : ''));
     const meta = element('div', '', 'msg-meta');
-    const time = element('time', new Intl.DateTimeFormat('pl-PL', { timeStyle: 'short' }).format(data.created * 1000));
+    const bubble = element('div', '', 'bubble');
+    const time = element('time', shortTime.format(data.created * 1000));
     time.dateTime = new Date(data.created * 1000).toISOString();
     time.title = dateTime(data.created);
-    meta.append(element('strong', data.author), time);
-    row.append(meta);
+    meta.append(element('strong', data.mine ? 'Ty' : data.author), time);
+    if (!data.mine) {
+      const avatar = element('span', Array.from(data.author)[0]?.toUpperCase(), 'avatar');
+      avatar.setAttribute('aria-hidden', 'true');
+      row.append(avatar);
+    }
     if (data.kind === 'code') {
-      row.append(codeBlock(data.body, data.lang));
+      if (data.asset) {
+        bubble.append(button(data.name + ' · v' + data.num,
+          () => assets.openAsset(data.asset, data.num, data.name), 'snippet-heading'));
+      }
+      bubble.append(codeBlock(data.body, data.lang));
     } else if (data.kind === 'asset') {
       const icon = data.asset_kind === 'folder' ? '▱ ' : '▤ ';
-      row.append(button(icon + data.name + ' · v' + data.num,
+      bubble.append(button(icon + data.name + ' · v' + data.num,
         () => assets.openAsset(data.asset, data.num, data.name), 'msg-asset'));
-      if (data.body) row.append(element('p', data.body, 'msg-text muted'));
+      if (data.body) bubble.append(element('p', data.body, 'msg-text muted attachment-note'));
     } else {
-      row.append(element('p', data.body, 'msg-text'));
+      const paragraph = element('p', data.body, 'msg-text');
+      const excerpt = data.body.split('\n').slice(0, 12).join('\n').slice(0, 900).trimEnd();
+      if (excerpt.length < data.body.trimEnd().length) {
+        paragraph.id = 'message-' + data.id;
+        paragraph.textContent = excerpt + '…';
+        const toggle = button('Pokaż całą wiadomość', () => {
+          const expand = toggle.getAttribute('aria-expanded') === 'false';
+          toggle.setAttribute('aria-expanded', String(expand));
+          toggle.textContent = expand ? 'Zwiń wiadomość' : 'Pokaż całą wiadomość';
+          paragraph.textContent = expand ? data.body : excerpt + '…';
+        }, 'message-summary');
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.setAttribute('aria-controls', paragraph.id);
+        bubble.append(paragraph, toggle);
+      } else {
+        bubble.append(paragraph);
+      }
     }
+    content.append(meta, bubble);
+    row.append(content);
     return row;
+  }
+
+  function renderMessages(batch, prepend = false) {
+    const fragment = document.createDocumentFragment();
+    let day = prepend ? '' : list.lastElementChild?.dataset.day;
+    for (const item of batch) {
+      const created = shortDay.format(item.created * 1000);
+      if (day !== created) {
+        fragment.append(element('li', created, 'date-divider'));
+        day = created;
+      }
+      const row = message(item);
+      row.dataset.day = created;
+      fragment.append(row);
+    }
+    if (prepend) {
+      if (list.firstElementChild?.textContent === day) list.firstElementChild.remove();
+      list.prepend(fragment);
+    } else {
+      list.append(fragment);
+    }
+  }
+
+  function nearBottom() {
+    return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 100;
+  }
+
+  function scrollToLatest() {
+    scroller.scrollTop = scroller.scrollHeight;
+    latest.hidden = true;
+  }
+
+  function showScreen() {
+    const showGallery = location.hash === '#zasoby';
+    if (showGallery && !chat.hidden) {
+      savedScroll = scroller.scrollTop;
+      followLatest = nearBottom();
+    }
+    const restorePosition = !showGallery && chat.hidden;
+    chat.hidden = showGallery;
+    gallery.hidden = !showGallery;
+    $('chat-link').toggleAttribute('aria-current', !showGallery);
+    $('gallery-link').toggleAttribute('aria-current', showGallery);
+    $(showGallery ? 'gallery-link' : 'chat-link').setAttribute('aria-current', 'page');
+    if (restorePosition) {
+      if (followLatest) scrollToLatest();
+      else scroller.scrollTop = savedScroll;
+    }
   }
 
   async function updateChat() {
@@ -93,16 +198,17 @@ function activateRoom(code, initial) {
     do {
       batch = await request(base + 'messages' + (last ? '?after=' + last : ''));
       if (!alive) return;
-      const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 110;
       if (batch.length) {
+        const follow = nearBottom() || starting;
         if (!first) {
           first = batch[0].id;
           older.hidden = batch.length < 80;
         }
         last = batch.at(-1).id;
         $('chat-empty').hidden = true;
-        list.append(...batch.map(message));
-        if (nearBottom || starting) scroller.scrollTop = scroller.scrollHeight;
+        renderMessages(batch);
+        if (!chat.hidden && follow) scrollToLatest();
+        else latest.hidden = false;
       }
     } while (!starting && batch.length === 80);
   }
@@ -110,18 +216,23 @@ function activateRoom(code, initial) {
   older.addEventListener('click', () => run(older, async () => {
     const batch = await request(base + 'messages?before=' + first);
     const oldHeight = scroller.scrollHeight;
+    const oldPosition = scroller.scrollTop;
     if (batch.length) {
       first = batch[0].id;
-      list.prepend(...batch.map(message));
-      scroller.scrollTop += scroller.scrollHeight - oldHeight;
+      renderMessages(batch, true);
     }
     older.hidden = batch.length < 80;
+    scroller.scrollTop = oldPosition + scroller.scrollHeight - oldHeight;
   }));
+  scroller.addEventListener('scroll', () => {
+    if (nearBottom()) latest.hidden = true;
+  });
+  latest.addEventListener('click', scrollToLatest);
 
   async function sync() {
     if (!alive || polling) return;
     polling = true;
-    let nextDelay = pollDelay;
+    let nextDelay = 1800;
     try {
       const data = await request(base + 'state');
       if (!alive) return;
@@ -155,19 +266,22 @@ function activateRoom(code, initial) {
     void sync();
   }
 
-  function setMode(value) {
+  function setMode(value, focus = input) {
     mode = value;
     const codeMode = mode === 'code';
     $('code-mode').setAttribute('aria-pressed', String(codeMode));
-    $('text-mode').setAttribute('aria-pressed', String(!codeMode));
-    $('language').hidden = !codeMode;
+    $('code-fields').hidden = !codeMode;
     input.classList.toggle('code-mode', codeMode);
     input.placeholder = codeMode ? 'Wklej lub wpisz kod…' : 'Napisz wiadomość…';
     input.spellcheck = !codeMode;
-    input.focus();
+    focus?.focus();
   }
-  $('text-mode').addEventListener('click', () => setMode('text'));
-  $('code-mode').addEventListener('click', () => setMode('code'));
+  $('code-mode').addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
+  $('add-code').addEventListener('click', () => {
+    location.hash = '#rozmowa';
+    showScreen();
+    setMode('code', $('snippet-title'));
+  });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
@@ -180,11 +294,23 @@ function activateRoom(code, initial) {
   });
   formAction(form, async () => {
     const sent = input.value;
+    const title = $('snippet-title').value;
+    const kind = mode;
     await request(base + 'messages', { method: 'POST',
-      data: { kind: mode, body: sent, lang: mode === 'code' ? $('language').value : '' } });
-    if (input.value === sent) input.value = '';
-    input.focus();
+      data: { kind, body: sent, title, lang: kind === 'code' ? $('language').value : '' } });
+    if (input.value === sent) {
+      input.value = '';
+      if (kind === 'code' && mode === 'code') setMode('text', null);
+    }
+    if ($('snippet-title').value === title) $('snippet-title').value = '';
+    if (!chat.hidden) input.focus();
+    scrollToLatest();
     refreshSoon();
+  });
+  $('show-people').addEventListener('click', () => {
+    peopleModal = present('Uczestnicy');
+    renderPeople();
+    peopleModal.el.addEventListener('close', () => { peopleModal = null; }, { once: true });
   });
   $('share-room').addEventListener('click', () => copyText(fullLink(code), 'Skopiowano link do pokoju.'));
   $('leave-room').addEventListener('click', () => run($('leave-room'), async () => {
@@ -194,8 +320,11 @@ function activateRoom(code, initial) {
     location.assign('/');
   }));
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSoon(); });
+  window.addEventListener('hashchange', showScreen);
   state(initial);
+  connected(true);
   assets.render();
+  showScreen();
   refreshSoon();
 }
 
@@ -203,7 +332,7 @@ let adminTimer;
 
 function roomCard(room) {
   const item = element('article', '', 'admin-room');
-  const code = element('span', room.code, 'mono room-id');
+  const code = element('span', formatCode(room.code), 'mono room-id');
   const title = element('h3', room.title);
   const detail = element('p', '', 'muted');
   detail.append(code, ' · Osób online: ' + room.online + ' · Retencja: ' + room.hours + ' godz.');
@@ -214,7 +343,7 @@ function roomCard(room) {
     button('Kopiuj link', () => copyText(fullLink(room.code), 'Skopiowano link do pokoju.')),
     button('Zmień retencję', () => changeRetention(room)),
     button('Zamknij', async () => {
-      const confirmed = await choose('Zamknij pokój ' + room.code + '?',
+      const confirmed = await choose('Zamknij pokój ' + formatCode(room.code) + '?',
         'Zamknięcie od razu usuwa wiadomości, kod, pliki, foldery i wszystkie ich wersje.',
         [['close', 'Zamknij i usuń dane', 'danger']]);
       if (!confirmed) return;
@@ -303,7 +432,7 @@ formAction($('create-form'), async () => {
   const actions = element('div', '', 'small-actions');
   actions.append(button('Kopiuj link', () => copyText(fullLink(room.code), 'Skopiowano link do pokoju.')),
     link('Otwórz pokój', roomLink(room.code), 'button primary'));
-  modal.body.append(element('p', 'Kod pokoju: ' + room.code, 'mono room-id'), actions);
+  modal.body.append(element('p', 'Kod pokoju: ' + formatCode(room.code), 'mono room-id'), actions);
 });
 
 async function start() {

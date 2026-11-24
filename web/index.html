@@ -33,7 +33,7 @@
       <h2 id="join-title">Dołącz do pokoju</h2>
       <form id="join-form">
         <label for="join-code">Kod pokoju</label>
-        <input id="join-code" class="entry-code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9]{6}" maxlength="6" placeholder="000000" required>
+        <input id="join-code" class="entry-code" name="code" inputmode="numeric" autocomplete="off" pattern="[0-9]{3} - [0-9]{3}" maxlength="9" placeholder="000 - 000" required>
         <label for="join-nick">Twój nick</label>
         <input id="join-nick" name="nick" autocomplete="nickname" maxlength="40" placeholder="np. Bartek" required>
         <p class="error" id="join-error" role="alert" hidden></p>
@@ -43,82 +43,95 @@
     </section>
   </main>
 
-  <main class="workspace" id="room-view" hidden>
-    <header class="workspace-head">
+  <main class="room-workspace" id="room-view" hidden>
+    <header class="room-head">
       <div class="workspace-title">
-        <p class="eyebrow">Pokój <span id="room-code" class="mono"></span></p>
+        <p class="room-idline">
+          <span id="connection" class="connection"><span class="status-dot"></span><span id="connection-label" class="sr-only">Połączono</span></span>
+          Pokój <span id="room-code" class="mono"></span>
+        </p>
         <h1 id="room-title"></h1>
       </div>
-      <div class="workspace-actions">
-        <span id="connection" class="connection"><span class="status-dot"></span><span id="connection-label">Połączono</span></span>
-        <button type="button" id="share-room">Kopiuj link</button>
-        <button type="button" id="leave-room">Wyjdź</button>
+      <div class="room-actions">
+        <button class="quiet" type="button" id="show-people" aria-haspopup="dialog" title="Uczestnicy"><span class="people-icon" aria-hidden="true"></span><span id="people-count">0</span></button>
+        <button class="quiet" type="button" id="share-room">Kopiuj link</button>
+        <button class="quiet" type="button" id="leave-room">Wyjdź</button>
       </div>
     </header>
-    <div class="room-grid">
-      <section class="panel chat" aria-labelledby="chat-title">
-        <div class="section-head">
-          <h2 id="chat-title">Rozmowa</h2>
-          <span id="current-user" class="muted"></span>
-        </div>
-        <div id="messages-scroll" class="messages-scroll" tabindex="0" aria-label="Historia rozmowy">
-          <button type="button" id="load-older" hidden>Wczytaj starsze</button>
-          <p class="empty" id="chat-empty">Tu pojawią się wiadomości oraz przesłane pliki.</p>
+
+    <nav class="room-nav" aria-label="Widoki pokoju">
+      <a href="#rozmowa" id="chat-link" aria-current="page">Rozmowa</a>
+      <a href="#zasoby" id="gallery-link">Zasoby <span id="asset-count" class="pill" hidden></span></a>
+    </nav>
+
+    <section id="chat-screen" class="chat" aria-label="Rozmowa">
+      <div id="messages-scroll" class="messages-scroll" tabindex="0" aria-label="Historia rozmowy">
+        <div class="chat-column">
+          <button type="button" class="quiet" id="load-older" hidden>Wczytaj starsze wiadomości</button>
+          <div class="chat-empty" id="chat-empty">
+            <span aria-hidden="true">›_</span>
+            <h2>Rozpocznij rozmowę</h2>
+            <p>Napisz wiadomość albo wklej fragment kodu.</p>
+          </div>
           <ol id="messages" aria-live="polite" aria-relevant="additions"></ol>
         </div>
-        <form id="message-form" class="composer">
-          <div class="composer-tools">
-            <div class="segmented" aria-label="Typ wiadomości">
-              <button id="text-mode" type="button" aria-pressed="true">Tekst</button>
-              <button id="code-mode" type="button" aria-pressed="false"><span aria-hidden="true">&gt;_</span> Kod</button>
+      </div>
+      <div class="compose-area">
+        <div class="compose-column">
+          <button type="button" id="jump-latest" hidden>Przejdź do najnowszych</button>
+          <form id="message-form" class="composer">
+            <div id="code-fields" class="code-fields" hidden>
+              <label class="sr-only" for="snippet-title">Nazwa fragmentu</label>
+              <input id="snippet-title" maxlength="80" placeholder="Nazwa fragmentu (opcjonalnie)">
+              <label class="sr-only" for="language">Język kodu</label>
+              <select id="language">
+                <option value="">Zwykły tekst</option>
+                <option value="bash">Bash</option>
+                <option value="c">C/C++</option>
+                <option value="css">CSS</option>
+                <option value="html">HTML</option>
+                <option value="java">Java</option>
+                <option value="js">JavaScript</option>
+                <option value="json">JSON</option>
+                <option value="python">Python</option>
+                <option value="sql">SQL</option>
+                <option value="ts">TypeScript</option>
+              </select>
             </div>
-            <label class="sr-only" for="language">Język kodu</label>
-            <select id="language" hidden>
-              <option value="">Zwykły tekst</option>
-              <option value="bash">Bash</option>
-              <option value="c">C/C++</option>
-              <option value="css">CSS</option>
-              <option value="html">HTML</option>
-              <option value="java">Java</option>
-              <option value="js">JavaScript</option>
-              <option value="json">JSON</option>
-              <option value="python">Python</option>
-              <option value="sql">SQL</option>
-              <option value="ts">TypeScript</option>
-            </select>
-          </div>
-          <label class="sr-only" for="message-text">Wiadomość</label>
-          <textarea id="message-text" maxlength="64000" placeholder="Napisz wiadomość…" rows="3" required></textarea>
-          <div class="composer-bottom"><span class="muted">Ctrl / ⌘ + Enter</span><button type="submit" class="primary">Wyślij</button></div>
-        </form>
-      </section>
-      <aside class="room-side">
-        <section class="panel resource-pane" aria-labelledby="assets-title">
-          <div class="section-head"><h2 id="assets-title">Zasoby</h2><span class="pill" id="asset-count">0</span></div>
-          <div class="resource-body">
-            <div class="file-drop" id="file-drop">
-              <p>Upuść plik lub folder</p>
-              <div class="small-actions">
-                <button type="button" id="pick-file">Dodaj plik</button>
-                <button type="button" id="pick-folder">Dodaj folder</button>
+            <label class="sr-only" for="message-text">Wiadomość</label>
+            <textarea id="message-text" maxlength="64000" placeholder="Napisz wiadomość…" rows="2" required></textarea>
+            <div class="composer-bottom">
+              <div class="composer-tools">
+                <button class="compose-mode" id="code-mode" type="button" aria-pressed="false"><span aria-hidden="true">&lt;/&gt;</span> Kod</button>
+                <span class="shortcut" aria-hidden="true">Ctrl / ⌘ + Enter</span>
               </div>
-              <input type="file" id="file-input" multiple hidden>
-              <input type="file" id="folder-input" webkitdirectory multiple hidden>
+              <button type="submit" class="primary">Wyślij</button>
             </div>
-            <div class="segmented resource-tabs" aria-label="Widok zasobów">
-              <button type="button" id="files-tab" aria-pressed="true">Pliki i foldery</button>
-              <button type="button" id="snippets-tab" aria-pressed="false">Kod</button>
-            </div>
-            <p id="assets-empty" class="empty"></p>
-            <ul id="resources" class="resource-list"></ul>
-          </div>
-        </section>
-        <section class="panel participants" aria-labelledby="people-title">
-          <div class="section-head"><h2 id="people-title">Uczestnicy</h2><span class="pill" id="people-count">0</span></div>
-          <ul id="people" class="people-list"></ul>
-        </section>
-      </aside>
-    </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section id="gallery-screen" class="gallery" aria-labelledby="gallery-title" hidden>
+      <div class="gallery-head">
+        <h2 id="gallery-title">Galeria zasobów</h2>
+        <div class="small-actions">
+          <button type="button" id="pick-file">Dodaj plik</button>
+          <button type="button" id="pick-folder">Dodaj folder</button>
+          <button type="button" id="add-code" class="primary">Dodaj kod</button>
+        </div>
+        <input type="file" id="file-input" multiple hidden>
+        <input type="file" id="folder-input" webkitdirectory multiple hidden>
+      </div>
+      <div class="gallery-filter segmented" aria-label="Filtr galerii">
+        <button type="button" id="all-tab" aria-pressed="true">Wszystkie</button>
+        <button type="button" id="files-tab" aria-pressed="false">Pliki i foldery</button>
+        <button type="button" id="snippets-tab" aria-pressed="false">Kod</button>
+      </div>
+      <p class="gallery-drop" id="file-drop">Przeciągnij tutaj pliki i foldery</p>
+      <p id="assets-empty" class="empty gallery-empty"></p>
+      <ul id="resources" class="gallery-grid"></ul>
+    </section>
   </main>
 
   <main class="landing single" id="login-view" hidden>

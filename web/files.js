@@ -1,10 +1,11 @@
-import { $, element, button, link, request, present, choose, notify, codeBlock, dateTime } from './ui.js';
+import { $, element, button, link, request, present, choose, notify, codeBlock, dateTime, formAction } from './ui.js';
 
 const MAX_ENTRIES = 2048;
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_HEADER = 1024 * 1024;
-const icons = { folder: '▱', file: '▤', code: '>_' };
+const icons = { folder: '▱', file: '▤', code: '</>' };
 const changesLabels = { added: 'Dodano', removed: 'Usunięto', changed: 'Zmieniono' };
+const kindLabels = { folder: 'Folder', file: 'Plik', code: 'Kod' };
 
 function bytes(size) {
   if (size < 1024) return size + ' B';
@@ -62,9 +63,9 @@ function readDrop(transfer) {
   return Promise.all(entries.map(async (entry) => {
     const contents = [];
     await collectDropped(entry, contents);
-    return { name: entry.name, kind: entry.isDirectory ? 'folder' : 'file',
-      entries: entry.isDirectory ? contents.map(({ path, file }) => ({ path: path.slice(entry.name.length + 1), file })).slice(1)
-        : contents };
+    if (!entry.isDirectory) return { name: entry.name, kind: 'file', entries: contents };
+    const relative = contents.slice(1).map(({ path, file }) => ({ path: path.slice(entry.name.length + 1), file }));
+    return { name: entry.name, kind: 'folder', entries: relative };
   }));
 }
 
@@ -96,42 +97,38 @@ function resourceButton(name, description, kind, action) {
 
 export function resources(base, afterUpload) {
   let catalog = { files: [], codes: [] };
-  let tab = 'files';
+  let tab = 'all';
   let busy = false;
-
-  async function openCode(id) {
-    const modal = present('Fragment kodu');
-    modal.body.textContent = 'Wczytywanie…';
-    try {
-      const code = await request(base + 'code/' + id);
-      modal.body.replaceChildren(
-        element('p', code.author + ' · ' + dateTime(code.created), 'muted'),
-        codeBlock(code.body, code.lang),
-      );
-    } catch (error) {
-      modal.body.textContent = '';
-      modal.error(error.message);
-    }
-  }
+  let rendered;
 
   function render(value = catalog) {
     catalog = value;
+    const signature = JSON.stringify([tab, value]);
+    if (signature === rendered) return;
+    rendered = signature;
     const list = $('resources');
     list.replaceChildren();
-    $('asset-count').textContent = catalog.files.length + catalog.codes.length;
+    const count = catalog.files.length + catalog.codes.length;
+    $('asset-count').textContent = count;
+    $('asset-count').hidden = !count;
+    $('all-tab').setAttribute('aria-pressed', String(tab === 'all'));
     $('files-tab').setAttribute('aria-pressed', String(tab === 'files'));
     $('snippets-tab').setAttribute('aria-pressed', String(tab === 'codes'));
-    $('assets-empty').hidden = catalog[tab].length > 0;
-    $('assets-empty').textContent = tab === 'files' ? 'Brak plików i folderów.' : 'Brak fragmentów kodu.';
-    for (const item of catalog[tab]) {
+    const items = tab === 'all' ? [...catalog.files, ...catalog.codes].sort((a, b) => b.created - a.created || b.id - a.id) : catalog[tab];
+    $('assets-empty').hidden = items.length > 0;
+    $('assets-empty').textContent = { all: 'Brak zasobów.', files: 'Brak plików i folderów.', codes: 'Brak fragmentów kodu.' }[tab];
+    for (const item of items) {
       const row = element('li');
-      if (tab === 'files') {
-        row.append(resourceButton(item.name, 'v' + item.num + ' · ' + bytes(item.size), item.kind,
-          () => openAsset(item.id, item.num, item.name)));
-      } else {
-        row.append(resourceButton(item.title, item.author + (item.lang ? ' · ' + item.lang : ''), 'code',
-          () => openCode(item.id)));
-      }
+      const card = button('', () => openAsset(item.id, item.num, item.name), 'gallery-card');
+      card.setAttribute('aria-label', item.name + ' · v' + item.num);
+      const top = element('span', '', 'gallery-card-top');
+      const icon = element('span', icons[item.kind], 'gallery-icon');
+      icon.setAttribute('aria-hidden', 'true');
+      top.append(icon, element('span', 'v' + item.num, 'pill'));
+      const metadata = [kindLabels[item.kind], item.kind === 'code' ? item.lang : bytes(item.size), item.author];
+      card.append(top, element('span', item.name, 'gallery-card-title'),
+        element('span', metadata.filter(Boolean).join(' · '), 'gallery-card-meta'));
+      row.append(card);
       list.append(row);
     }
   }
@@ -162,10 +159,11 @@ export function resources(base, afterUpload) {
         if (!revision) return;
         modal.error('');
         const prefix = url + '/' + revision.num;
-        const zip = asset.kind === 'folder';
-        tools.replaceChildren(link(zip ? 'Pobierz ZIP' : 'Pobierz', prefix + '/download'),
+        const snippet = asset.kind === 'code';
+        tools.replaceChildren(link(asset.kind === 'folder' ? 'Pobierz ZIP' : 'Pobierz', prefix + '/download'),
           button('Podgląd', () => preview()),
           button('Zmiany', () => showChanges()));
+        if (snippet) tools.append(button('Nowa wersja', () => editSnippet(asset, revision, prefix), 'primary'));
         if (revision.num !== asset.history[0].num) {
           tools.append(button('Przywróć', async () => {
             const restore = await choose('Przywróć wersję', 'Kopia v' + revision.num + ' stanie się najnowszą wersją.',
@@ -195,7 +193,7 @@ export function resources(base, afterUpload) {
         async function showChanges() {
           const view = element('div', 'Wczytywanie…');
           content.replaceChildren(view);
-          await renderChanges(prefix, view).catch((error) => { view.textContent = error.message; });
+          await renderChanges(prefix, view, snippet).catch((error) => { view.textContent = error.message; });
         }
       }
 
@@ -205,6 +203,53 @@ export function resources(base, afterUpload) {
       modal.body.textContent = '';
       modal.error(error.message);
     }
+  }
+
+  async function editSnippet(asset, revision, prefix) {
+    const current = await request(prefix + '/preview');
+    const modal = present('Nowa wersja · ' + asset.name);
+    const form = element('form', '', 'dialog-form');
+    const language = $('language').cloneNode(true);
+    language.id = 'version-language';
+    if (![...language.options].some((item) => item.value === current.lang)) {
+      const option = element('option', current.lang);
+      option.value = current.lang;
+      language.append(option);
+    }
+    language.value = current.lang;
+    const code = element('textarea');
+    code.id = 'version-code';
+    code.value = current.text;
+    code.rows = 9;
+    code.maxLength = 64000;
+    code.required = true;
+    code.spellcheck = false;
+    code.className = 'mono';
+    const note = element('input');
+    note.id = 'version-note';
+    note.maxLength = 200;
+    for (const [name, control] of [
+      ['Język kodu', language], ['Kod', code], ['Opis zmian (opcjonalnie)', note],
+    ]) {
+      const label = element('label', name);
+      label.htmlFor = control.id;
+      form.append(label, control);
+    }
+    const actions = element('div', '', 'small-actions');
+    const submit = element('button', 'Zapisz wersję', 'primary');
+    submit.type = 'submit';
+    actions.append(submit, button('Anuluj', () => openAsset(asset.id, revision.num, asset.name)));
+    form.append(actions);
+    modal.body.append(form);
+    code.focus();
+    formAction(form, async () => {
+      const saved = await request(base + 'messages', {
+        method: 'POST',
+        data: { kind: 'code', asset: asset.id, body: code.value, lang: language.value, note: note.value },
+      });
+      afterUpload();
+      await openAsset(asset.id, saved.num, asset.name);
+    }, modal.error);
   }
 
   async function save(packet) {
@@ -258,7 +303,7 @@ export function resources(base, afterUpload) {
     else if (uploaded) notify('Przesłano: ' + uploaded);
   }
 
-  const drop = $('file-drop');
+  const drop = $('gallery-screen');
   drop.addEventListener('dragover', (event) => {
     if (!event.dataTransfer.types.includes('Files')) return;
     event.preventDefault();
@@ -300,10 +345,11 @@ export function resources(base, afterUpload) {
       queue(() => packets);
     });
   }
-  $('files-tab').addEventListener('click', () => { tab = 'files'; render(); });
-  $('snippets-tab').addEventListener('click', () => { tab = 'codes'; render(); });
+  for (const [id, filter] of [['all-tab', 'all'], ['files-tab', 'files'], ['snippets-tab', 'codes']]) {
+    $(id).addEventListener('click', () => { tab = filter; render(); });
+  }
 
-  return { render, openAsset, openCode };
+  return { render, openAsset };
 }
 
 async function renderPreview(prefix, target, name) {
@@ -341,11 +387,16 @@ async function renderPreview(prefix, target, name) {
 function previewText(data, name) {
   if (data.type === 'binary') return element('p', data.text, 'muted');
   if (data.type === 'zip') return codeBlock(data.text, 'Zawartość ZIP');
-  const extension = name.includes('.') ? name.split('.').at(-1).toLowerCase() : '';
+  const extension = data.lang ?? (name.includes('.') ? name.split('.').at(-1).toLowerCase() : '');
   return codeBlock(data.text, extension);
 }
 
-async function renderChanges(prefix, target) {
+async function renderChanges(prefix, target, snippet) {
+  if (snippet) {
+    const result = await request(prefix + '/changes?path=fragment');
+    target.replaceChildren(codeBlock(result.text, '', true));
+    return;
+  }
   const data = await request(prefix + '/changes');
   target.replaceChildren();
   if (!data.length) {

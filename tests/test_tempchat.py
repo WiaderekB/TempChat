@@ -1,11 +1,14 @@
 import io
 import json
+import sqlite3
 import tempfile
+import time
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from http.cookies import SimpleCookie
+from pathlib import Path
 from urllib.parse import urlsplit
 from wsgiref.util import setup_testing_defaults
 
@@ -121,15 +124,73 @@ class TempChatTest(unittest.TestCase):
                   {'kind': 'code', 'lang': 'python', 'body': 'print("dzień dobry")\n'})
         chat = self.call(self.ala, 200, 'GET', base + 'messages')
         self.assertEqual([(m['author'], m['kind']) for m in chat], [('Ala', 'text'), ('Ola', 'code')])
+        self.assertEqual([m['mine'] for m in chat], [1, 0])
+        self.assertEqual([m['mine'] for m in self.call(self.ola, 200, 'GET', base + 'messages')], [0, 1])
+        self.assertNotIn('sender', chat[0])
         snippets = self.call(self.ala, 200, 'GET', base + 'catalog')['codes']
-        item = self.call(self.ala, 200, 'GET', base + f'code/{snippets[0]["id"]}')
+        self.assertEqual(snippets[0]['id'], chat[1]['asset'])
+        item = self.call(self.ala, 200, 'GET', base + f'code/{chat[1]["id"]}')
         self.assertEqual(item['body'], 'print("dzień dobry")\n')
+        self.assertNotIn('sender', item)
         other = self.call(self.admin, 200, 'POST', '/api/admin/rooms', {'title': 'Osobny pokój'})
         other_base = '/api/room/' + other['code'] + '/'
         self.call(self.ala, 200, 'POST', other_base + 'join', {'nick': 'Ala'})
         self.call(self.ala, 404, 'GET', other_base + f'code/{item["id"]}')
         self.call(self.ola, 200, 'POST', base + 'leave')
         self.assertEqual(self.call(self.ala, 200, 'GET', base + 'state')['people'], ['Ala'])
+
+    def test_same_nick_and_long_message(self):
+        base = self.room()
+        self.call(self.ola, 200, 'POST', base + 'join', {'nick': 'Ala'})
+        text = 'Akapit numer jeden.\n\n' * 100
+        self.call(self.ala, 200, 'POST', base + 'messages', {'kind': 'text', 'body': text})
+        item = self.call(self.ola, 200, 'GET', base + 'messages')[0]
+        self.assertEqual(item['body'], text)
+        self.assertFalse(item['mine'])
+
+    def test_named_code_versions_diff_and_restore(self):
+        base = self.room()
+        self.call(self.ola, 200, 'POST', base + 'join', {'nick': 'Ola'})
+        first = self.call(self.ala, 200, 'POST', base + 'messages',
+                          {'kind': 'code', 'title': 'Pierwsza funkcja', 'lang': 'python', 'body': 'print(1)\n'})
+        asset = first['asset']
+        url = base + f'assets/{asset}'
+        self.call(self.ola, 200, 'POST', base + 'messages',
+                  {'kind': 'code', 'asset': asset, 'lang': 'js', 'body': 'console.log(2)\n', 'note': 'Zmiana języka'})
+        history = self.call(self.ala, 200, 'GET', url)['history']
+        self.assertEqual([(row['num'], row['lang']) for row in history], [(2, 'js'), (1, 'python')])
+        self.assertEqual(history[0]['note'], 'Zmiana języka')
+        diff = self.call(self.ala, 200, 'GET', url + '/2/changes?path=fragment')['text']
+        self.assertIn('-print(1)\n+console.log(2)', diff)
+        self.assertEqual(self.call(self.ala, 200, 'POST', url + '/1/restore')['num'], 3)
+        restored = self.call(self.ala, 200, 'GET', url + '/3/preview')
+        self.assertEqual(restored, {'type': 'text', 'text': 'print(1)\n', 'lang': 'python'})
+        catalog = self.call(self.ala, 200, 'GET', base + 'catalog')
+        self.assertEqual(catalog['files'], [])
+        self.assertEqual([(row['name'], row['num']) for row in catalog['codes']], [('Pierwsza funkcja', 3)])
+        history = self.call(self.ala, 200, 'GET', base + 'messages')
+        self.assertEqual([(row['name'], row['num'], row['mine']) for row in history],
+                         [('Pierwsza funkcja', 1, 1), ('Pierwsza funkcja', 2, 0), ('Pierwsza funkcja', 3, 1)])
+
+    def test_legacy_code_is_migrated_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory, 'rooms.sqlite3')
+            schema = Path(__file__).resolve().parents[1].joinpath('schema.sql').read_text()
+            legacy = schema.replace(", lang TEXT NOT NULL DEFAULT ''", '').replace(', sender TEXT', '')
+            now = int(time.time())
+            with closing(sqlite3.connect(database)) as db, db:
+                db.executescript(legacy)
+                db.execute('INSERT INTO rooms VALUES(?,?,?,?,?)', ('000001', 'Stary pokój', 24, now, now + 3600))
+                db.execute("INSERT INTO messages VALUES(1,'000001','code','Ala','hello','js',NULL,NULL,?)", (now,))
+            app = App(directory, PASSWORD, ORIGIN, sweep=False)
+            client = Client(app)
+            base = '/api/room/000001/'
+            self.call(client, 200, 'POST', base + 'join', {'nick': 'Ola'})
+            old = self.call(client, 200, 'GET', base + 'messages')[0]
+            self.assertEqual((old['id'], old['num'], old['body'], old['mine']), (1, 1, 'hello', 0))
+            client.app = App(directory, PASSWORD, ORIGIN, sweep=False)
+            codes = self.call(client, 200, 'GET', base + 'catalog')['codes']
+            self.assertEqual([(item['id'], item['num']) for item in codes], [(old['asset'], 1)])
 
     def test_file_conflict_history_restore_and_copy(self):
         base = self.room()

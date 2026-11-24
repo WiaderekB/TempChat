@@ -87,6 +87,16 @@ class App:
         self.uploads = threading.BoundedSemaphore(3)
         with closing(self.connect()) as db:
             db.executescript((ROOT/'schema.sql').read_text())
+            with db:
+                db.execute('BEGIN IMMEDIATE')
+                for table, name, declaration in (
+                    ('messages', 'sender', 'TEXT'),
+                    ('versions', 'lang', "TEXT NOT NULL DEFAULT ''"),
+                ):
+                    columns = {column['name'] for column in db.execute(f'PRAGMA table_info({table})')}
+                    if name not in columns:
+                        db.execute(f'ALTER TABLE {table} ADD COLUMN {name} {declaration}')
+                assets.migrate_snippets(db)
         if sweep:
             threading.Thread(target=self.sweeper,daemon=True).start()
 
@@ -192,7 +202,7 @@ class App:
                     db.execute('BEGIN IMMEDIATE')
                     saved_at = int(time.time())
                     member = self.member(db,req,room,saved_at)
-                    return assets.save(db,room,member['nick'],saved_at,packet)
+                    return assets.save(db,room,member,saved_at,packet)
                 finally:
                     self.uploads.release()
             db.execute('BEGIN IMMEDIATE' if method != 'GET' or action == 'state' else 'BEGIN')
@@ -231,21 +241,25 @@ class App:
                     require(isinstance(body,str) and body.strip() and len(body)<=64000,400,'Wiadomość musi mieć od 1 do 64 000 znaków.')
                     lang = data.get('lang','')
                     require(isinstance(lang,str) and len(lang)<=40,400,'Niepoprawny język.')
-                    db.execute("INSERT INTO messages(room,kind,author,body,lang,created) VALUES(?,?,?,?,?,?)",(room,kind,nick,body,lang,now))
+                    if kind == 'code':
+                        return assets.save_snippet(db, room, member, now, body, lang, data)
+                    db.execute("INSERT INTO messages(room,kind,author,body,lang,created,sender) VALUES(?,?,?,?,?,?,?)",
+                               (room,kind,nick,body,'',now,member['token']))
                     return {'ok':True}
                 if method == 'GET':
-                    return self.messages(db,req,room)
+                    return self.messages(db,req,room,member['token'])
             if action == 'catalog' and method == 'GET':
-                files = rows(db.execute('SELECT a.*,v.num,v.size,v.created,v.author FROM assets a JOIN versions v '
+                items = rows(db.execute('SELECT a.*,v.num,v.size,v.created,v.author,v.lang FROM assets a JOIN versions v '
                     'ON v.asset=a.id WHERE a.room=? AND v.num=(SELECT max(num) FROM versions WHERE asset=a.id) ORDER BY v.created DESC,a.id DESC',(room,)))
-                codes = rows(db.execute("SELECT id,author,lang,substr(body,1,90) AS title,created FROM messages WHERE kind='code' AND room=? ORDER BY id DESC",(room,)))
-                return {'files':files,'codes':codes}
+                return {'files': [item for item in items if item['kind'] != 'code'],
+                        'codes': [item for item in items if item['kind'] == 'code']}
             code = re.fullmatch(r'code/(\d+)',action)
             if code and method == 'GET':
-                row = db.execute("SELECT * FROM messages WHERE room=? AND kind='code' AND id=?",(room,code[1])).fetchone()
+                row = db.execute("SELECT id,author,body,lang,created,asset,num FROM messages "
+                                 "WHERE room=? AND kind='code' AND id=?", (room,code[1])).fetchone()
                 require(row,404,'Nie znaleziono kodu.')
                 return dict(row)
-            return self.asset_action(db,req,room,nick,now,action)
+            return self.asset_action(db,req,room,member,now,action)
 
     @staticmethod
     def room(db,room,now):
@@ -264,11 +278,12 @@ class App:
         db.execute('UPDATE rooms SET expires=?+hours*3600 WHERE code=?',(now+PRESENCE,room))
 
     @staticmethod
-    def messages(db,req,room):
-        query = 'SELECT m.*,a.name,a.kind AS asset_kind FROM messages m LEFT JOIN assets a ON a.id=m.asset WHERE m.room=?'
+    def messages(db,req,room,token):
+        query = ('SELECT m.id,m.room,m.kind,m.author,m.body,m.lang,m.asset,m.num,m.created,a.name,a.kind AS asset_kind,'
+                 'coalesce(m.sender=?,0) AS mine FROM messages m LEFT JOIN assets a ON a.id=m.asset WHERE m.room=?')
         if req.arg('after'):
-            return rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 80',(room,int(req.arg('after')))))
-        return rows(db.execute(query+' AND m.id<? ORDER BY m.id DESC LIMIT 80',(room,int(req.arg('before',str(2**63-1))))))[::-1]
+            return rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 80',(token,room,int(req.arg('after')))))
+        return rows(db.execute(query+' AND m.id<? ORDER BY m.id DESC LIMIT 80',(token,room,int(req.arg('before',str(2**63-1))))))[::-1]
 
     def admin(self,db,req,now):
         action = req.path.removeprefix('/api/admin/')
@@ -313,19 +328,22 @@ class App:
                 return {'ok':True}
         raise Problem(404,'Nie znaleziono.')
 
-    def asset_action(self,db,req,room,nick,now,action):
+    def asset_action(self,db,req,room,member,now,action):
         match = re.fullmatch(r'assets/(\d+)(?:/(\d+)/(download|preview|changes|restore))?',action)
         require(match,404,'Nie znaleziono zasobu.')
         asset, num, op = match.groups()
         if not op and req.method == 'GET':
             obj = db.execute('SELECT * FROM assets WHERE id=? AND room=?',(asset,room)).fetchone()
             require(obj,404,'Nie znaleziono zasobu.')
-            history = rows(db.execute('SELECT num,author,created,note,size FROM versions WHERE asset=? ORDER BY num DESC',(asset,)))
+            history = rows(db.execute('SELECT num,author,created,note,size,lang FROM versions WHERE asset=? ORDER BY num DESC',(asset,)))
             return {**dict(obj),'history':history}
         row, manifest = assets.snapshot(db,room,asset,num)
         path = req.arg('path')
         if op == 'restore' and req.method == 'POST':
-            return assets.revision(db,room,asset,nick,now,f'Przywrócono v{num}',manifest,row['size'])
+            snippet = None
+            if row['kind'] == 'code':
+                snippet = assets.get_blob(db, room, manifest[assets.CODE_PATH]).decode()
+            return assets.revision(db,room,asset,member,now,f'Przywrócono v{num}',manifest,row['size'],snippet,row['lang'])
         require(req.method == 'GET' and op != 'restore',405,'Nieobsługiwana metoda.')
         if op == 'changes':
             old = assets.snapshot(db,room,asset,int(num)-1)[1] if int(num)>1 else {}
@@ -334,14 +352,16 @@ class App:
             return assets.changes(old,manifest)
         if op == 'preview' and not path and row['kind']=='folder':
             return {'type':'folder','entries':[{'path':p,'dir':v is None} for p,v in sorted(manifest.items())]}
-        if not path and row['kind']=='file':
+        if not path and row['kind'] != 'folder':
             path = next(iter(manifest))
         if path:
             require(manifest.get(path),404,'Nie znaleziono pliku.')
             if op == 'preview':
+                if row['kind'] == 'code':
+                    return {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}
                 return assets.preview(db,room,manifest[path])
             payload = assets.get_blob(db,room,manifest[path])
-            filename = path.split('/')[-1]
+            filename = row['name'] + '.txt' if row['kind'] == 'code' else path.split('/')[-1]
         else:
             payload = assets.archive(db,room,row['name'],manifest)
             filename = row['name']+'.zip'

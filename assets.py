@@ -13,6 +13,7 @@ MIB = 1024 * 1024
 MAX_BYTES = 64 * MIB
 MAX_ENTRIES = 2048
 ROOM_BYTES = 512 * MIB
+CODE_PATH = 'fragment'
 
 
 class Problem(Exception):
@@ -88,16 +89,22 @@ def copy_name(db, room, name, kind):
         i += 1
 
 
-def revision(db, room, asset, nick, now, note, manifest, size):
+def version(db, asset, author, now, note, manifest, size, lang):
     num = db.execute('SELECT coalesce(max(num),0)+1 FROM versions WHERE asset=?', (asset,)).fetchone()[0]
-    db.execute('INSERT INTO versions(asset,num,author,created,note,manifest,size) VALUES(?,?,?,?,?,?,?)',
-               (asset, num, nick, now, note, json.dumps(manifest, ensure_ascii=False), size))
-    db.execute("INSERT INTO messages(room,kind,author,body,lang,asset,num,created) VALUES(?,'asset',?,?,'',?,?,?)",
-               (room, nick, note, asset, num, now))
+    db.execute('INSERT INTO versions(asset,num,author,created,note,manifest,size,lang) VALUES(?,?,?,?,?,?,?,?)',
+               (asset, num, author, now, note, json.dumps(manifest, ensure_ascii=False), size, lang))
+    return num
+
+
+def revision(db, room, asset, member, now, note, manifest, size, snippet=None, lang=''):
+    num = version(db, asset, member['nick'], now, note, manifest, size, lang)
+    kind, body = ('code', snippet) if snippet is not None else ('asset', note)
+    db.execute('INSERT INTO messages(room,kind,author,body,lang,asset,num,created,sender) VALUES(?,?,?,?,?,?,?,?,?)',
+               (room, kind, member['nick'], body, lang, asset, num, now, member['token']))
     return {'asset': asset, 'num': num}
 
 
-def save(db, room, nick, now, packet):
+def save(db, room, member, now, packet):
     name, kind, mode, note, manifest, contents, size = packet
     existing = db.execute('SELECT * FROM assets WHERE room=? AND name=?', (room, name)).fetchone()
     if existing and mode == 'copy':
@@ -110,6 +117,11 @@ def save(db, room, nick, now, packet):
         asset = existing['id']
     else:
         asset = db.execute('INSERT INTO assets(room,name,kind) VALUES(?,?,?)', (room,name,kind)).lastrowid
+    store_blobs(db, room, contents)
+    return revision(db, room, asset, member, now, note, manifest, size)
+
+
+def store_blobs(db, room, contents):
     used = db.execute('SELECT coalesce(sum(length(data)),0) FROM blobs WHERE room=?', (room,)).fetchone()[0]
     for digest, data in contents.items():
         if db.execute('SELECT 1 FROM blobs WHERE room=? AND digest=?',(room,digest)).fetchone():
@@ -117,7 +129,42 @@ def save(db, room, nick, now, packet):
         used += len(data)
         require(used <= ROOM_BYTES, 413, 'Pokój osiągnął limit 512 MiB danych plikowych.')
         db.execute('INSERT INTO blobs(room,digest,data) VALUES(?,?,?)', (room,digest,data))
-    return revision(db, room, asset, nick, now, note, manifest, size)
+
+
+def create_snippet(db, room, name):
+    if db.execute('SELECT 1 FROM assets WHERE room=? AND name=?', (room, name)).fetchone():
+        name = copy_name(db, room, name, 'code')
+    return db.execute("INSERT INTO assets(room,name,kind) VALUES(?,?,'code')", (room, name)).lastrowid
+
+
+def save_snippet(db, room, member, now, text, lang, data):
+    asset = data.get('asset')
+    if asset is None:
+        name = data.get('title', '')
+        require(isinstance(name, str) and len(name) <= 80, 400, 'Nazwa może zawierać do 80 znaków.')
+        asset = create_snippet(db, room, name.strip() or 'Fragment kodu')
+    else:
+        require(type(asset) is int and 0 < asset < 2**63, 400, 'Niepoprawny fragment.')
+        require(db.execute("SELECT 1 FROM assets WHERE id=? AND room=? AND kind='code'",
+                           (asset, room)).fetchone(), 404, 'Nie znaleziono fragmentu kodu.')
+    note = data.get('note', '')
+    require(isinstance(note, str) and len(note) <= 200, 400, 'Opis wersji jest zbyt długi.')
+    encoded = text.encode()
+    digest = hashlib.sha256(encoded).hexdigest()
+    store_blobs(db, room, {digest: encoded})
+    return revision(db, room, asset, member, now, note.strip(), {CODE_PATH: digest}, len(encoded), text, lang)
+
+
+def migrate_snippets(db):
+    pending = db.execute("SELECT * FROM messages WHERE kind='code' AND asset IS NULL ORDER BY id").fetchall()
+    for message in pending:
+        room = message['room']
+        asset = create_snippet(db, room, 'Fragment kodu')
+        data = message['body'].encode()
+        digest = hashlib.sha256(data).hexdigest()
+        db.execute('INSERT OR IGNORE INTO blobs(room,digest,data) VALUES(?,?,?)', (room, digest, data))
+        num = version(db, asset, message['author'], message['created'], '', {CODE_PATH: digest}, len(data), message['lang'])
+        db.execute('UPDATE messages SET asset=?,num=? WHERE id=?', (asset, num, message['id']))
 
 
 def get_blob(db, room, digest, limit=None):

@@ -1,9 +1,9 @@
 # TempChat
 
-Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Administrator tworzy pokój, a uczestnicy dołączają nickiem i sześciocyfrowym kodem lub linkiem.
+Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Administrator tworzy pokój, a uczestnicy dołączają nickiem i kodem w formacie `123 - 456` lub linkiem.
 
-- Rozmowa, fragmenty kodu z wyborem języka oraz lista uczestników.
-- Pliki i całe foldery z zachowaniem ścieżek. Folder można pobrać jako ZIP albo pobrać z niego pojedynczy plik.
+- Czat z wyróżnieniem własnych wiadomości, rozwijanym podglądem długiego tekstu i licznikiem uczestników otwierającym ich listę.
+- Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Folder można pobrać jako ZIP albo pobrać z niego pojedynczy plik.
 - Historia wersji, podgląd tekstu, lista zmian w folderze i porównanie tekstu. Przywrócenie zapisuje kolejną wersję.
 - Panel administratora pod `/admin` pozwala utworzyć pokój, zmienić czas przechowywania i zamknąć pokój z natychmiastowym usunięciem danych.
 
@@ -14,7 +14,7 @@ Limit jednej przesyłki wynosi 64 MiB i 2048 elementów. Limit unikatowej zawart
 ## Portainer na Docker Standalone
 
 1. W Portainerze przejdź do **Stacks → Add stack → Git repository**. Nazwij stack `rooms`.
-2. Wpisz adres repozytorium GitHub, gałąź `refs/heads/main` i ścieżkę `compose.yaml`. Dla prywatnego repozytorium włącz **Authentication**, wybierz **Basic** i użyj nazwy użytkownika GitHub oraz tokenu z prawem odczytu zawartości tego repozytorium.
+2. Wpisz adres `https://github.com/WiaderekB/TempChat.git`, gałąź `refs/heads/main` i ścieżkę `compose.yaml`. Dla prywatnego repozytorium włącz **Authentication**, wybierz **Basic** i użyj nazwy użytkownika GitHub oraz tokenu z prawem odczytu zawartości tego repozytorium.
 3. Dodaj w **Environment variables** zmienną `ADMIN_PASSWORD` z własnym hasłem administratora o długości od 12 do 1024 znaków. Wygeneruj je np. poleceniem `openssl rand -hex 24`.
 4. Wybierz **Deploy the stack**. Kontener buduje się ze źródeł, nasłuchuje na porcie `3087` i udostępnia ten sam port na hoście.
 
