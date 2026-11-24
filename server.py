@@ -251,10 +251,16 @@ class App:
                 if method == 'GET':
                     return self.messages(db,req,room,member['token'])
             if action == 'catalog' and method == 'GET':
-                items = rows(db.execute('SELECT a.*,v.num,v.size,v.created,v.author,v.lang FROM assets a JOIN versions v '
-                    'ON v.asset=a.id WHERE a.room=? AND v.num=(SELECT max(num) FROM versions WHERE asset=a.id) ORDER BY v.created DESC,a.id DESC',(room,)))
+                items = assets.catalog(db, room)
                 return {'files': [item for item in items if item['kind'] != 'code'],
                         'codes': [item for item in items if item['kind'] == 'code']}
+            if action == 'search' and method == 'GET':
+                query = req.arg('q').strip()
+                category = req.arg('category', 'all')
+                offset = req.arg('offset', '0')
+                require(0 < len(query) <= 1024 and category in ('all', 'files', 'codes') and
+                        re.fullmatch(r'[0-9]{1,9}', offset), 400, 'Invalid search.')
+                return assets.search_paths(db, room, query, category, int(offset))
             code = re.fullmatch(r'code/(\d+)',action)
             if code and method == 'GET':
                 row = db.execute("SELECT id,author,body,lang,created,asset,num FROM messages "
@@ -373,7 +379,7 @@ class App:
             if op == 'preview':
                 if row['kind'] == 'code':
                     return {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}
-                return assets.preview(db,room,manifest[path])
+                return assets.preview(db, room, manifest[path], path)
             payload = assets.get_blob(db,room,manifest[path])
             if row['kind'] == 'code':
                 suffix = '.tex' if row['lang'] in ('tex', 'latex') else '.txt'

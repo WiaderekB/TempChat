@@ -3,13 +3,13 @@
 Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Administrator tworzy pokój, a uczestnicy dołączają nickiem i kodem w formacie `123 - 456` lub linkiem.
 
 - Czat z wyróżnieniem własnych wiadomości, rozwijanym podglądem długiego tekstu i licznikiem uczestników otwierającym ich listę.
-- Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Przeglądarka zasobów ma drzewo ścieżek, wyszukiwanie i podgląd plików. Folder można pobrać jako ZIP albo pobrać z niego pojedynczy plik.
+- Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Wyszukiwanie w galerii obejmuje nazwy zasobów i ścieżki w ich najnowszych wersjach. Przeglądarka zasobów ma też wyszukiwanie w wybranym folderze, podgląd tabel CSV i TSV oraz pobieranie pojedynczych plików i folderów jako ZIP.
 - Historia wersji i porównanie tekstu w dwóch kolumnach lub w jednym widoku. Przywrócenie zapisuje kolejną wersję.
 - Panel administratora pod `/admin` pozwala utworzyć pokój, zmienić czas przechowywania i zamknąć pokój z natychmiastowym usunięciem danych.
 
 Pokój pozostaje dostępny po rozłączeniu ostatniego uczestnika. Domyślnie wygasa po 24 godzinach bez osób online. Pole retencji w panelu przyjmuje wartości od 1 do 8760 godzin. Zamknięcie lub wygaśnięcie usuwa z bazy wiadomości, fragmenty kodu, pliki, wersje i sesje uczestników. Pobrane kopie pozostają na urządzeniach uczestników. Pełne puste katalogi można przesłać przez przeciągnięcie folderu lub systemowy wybór katalogu w przeglądarkach obsługujących File System Access API. Zastępczy selektor folderu opiera się na liście plików, więc pomija puste katalogi.
 
-Limit jednej przesyłki wynosi 64 MiB i 2048 elementów. Limit unikatowej zawartości plikowej wynosi 512 MiB na pokój. Dane są zapisywane w lokalnym SQLite na nazwanym wolumenie Dockera.
+Limit jednej przesyłki wynosi 64 MiB danych i 10 000 elementów. Lista ścieżek może zajmować dodatkowe 4 MiB. Limit unikatowej zawartości plikowej wynosi 512 MiB na pokój. Dane są zapisywane w lokalnym SQLite na nazwanym wolumenie Dockera.
 
 ## Portainer na Docker Standalone
 
@@ -45,10 +45,10 @@ Dodaj **Proxy Host** z następującymi ustawieniami:
 | Websockets Support | Wyłączone. TempChat odświeża rozmowę przez HTTP. |
 | SSL | Certyfikat dla `tempchat.wiaderek.xyz` i włączone **Force SSL** |
 
-W zakładce **Advanced** dodaj dyrektywę umożliwiającą przesłanie 64 MiB danych z nagłówkiem:
+W zakładce **Advanced** dodaj dyrektywę umożliwiającą przesłanie 64 MiB danych z listą ścieżek.
 
 ```nginx
-client_max_body_size 66m;
+client_max_body_size 69m;
 ```
 
 Rekord DNS `tempchat` skieruj na adres używany przez Nginx Proxy Manager. Publiczny ruch kieruj do NPM na porty 80 i 443. Portu 3087 używa NPM do połączenia z hostem Dockera. Jeśli chcesz liczyć limity prób osobno dla adresów klientów, ustaw opcjonalne `TRUSTED_PROXY` na adres lub CIDR zaufanego NPM widziany przez kontener. Proxy musi ustawiać `X-Real-IP` na adres klienta.

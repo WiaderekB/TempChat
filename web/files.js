@@ -1,9 +1,10 @@
-import { $, element, link, request, choose, notify, languageLabel, formatBytes, assetIcons } from './ui.js';
+import { $, element, link, request, choose, notify, languageLabel, formatBytes, assetIcons, run } from './ui.js';
 import { assetBrowser, assetHash } from './asset-view.js';
 
-const MAX_ENTRIES = 2048;
+const MAX_ENTRIES = 10000;
 const MAX_BYTES = 64 * 1024 * 1024;
-const MAX_HEADER = 1024 * 1024;
+const MAX_HEADER = 4 * 1024 * 1024;
+const GALLERY_PAGE = 60;
 const kindLabels = { folder: 'Folder', file: 'File', code: 'Code' };
 
 function filePackets(files) {
@@ -21,7 +22,7 @@ function folderPacket(files) {
 async function collectFolder(directory, entries, ancestors = '') {
   for await (const handle of directory.values()) {
     const path = ancestors + handle.name;
-    if (entries.length >= MAX_ENTRIES) throw new Error('A folder can contain up to 2,048 items.');
+    if (entries.length >= MAX_ENTRIES) throw new Error('A folder can contain up to 10,000 items.');
     if (handle.kind === 'directory') {
       entries.push({ path, file: null });
       await collectFolder(handle, entries, path + '/');
@@ -31,19 +32,18 @@ async function collectFolder(directory, entries, ancestors = '') {
   }
 }
 
-async function collectDropped(entry, entries, parents = '') {
-  const path = parents + entry.name;
-  if (entries.length >= MAX_ENTRIES) throw new Error('A folder can contain up to 2,048 items.');
+async function collectDropped(entry, entries, path) {
+  if (path && entries.length >= MAX_ENTRIES) throw new Error('A folder can contain up to 10,000 items.');
   if (entry.isFile) {
     const file = await new Promise((resolve, reject) => entry.file(resolve, reject));
     entries.push({ path, file });
   } else if (entry.isDirectory) {
-    entries.push({ path, file: null });
+    if (path) entries.push({ path, file: null });
     const reader = entry.createReader();
     let batch;
     do {
       batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
-      for (const child of batch) await collectDropped(child, entries, path + '/');
+      for (const child of batch) await collectDropped(child, entries, path ? path + '/' + child.name : child.name);
     } while (batch.length);
   }
 }
@@ -54,17 +54,15 @@ function readDrop(transfer) {
   if (!entries.length) return Promise.resolve(filePackets(files));
   return Promise.all(entries.map(async (entry) => {
     const contents = [];
-    await collectDropped(entry, contents);
-    if (!entry.isDirectory) return { name: entry.name, kind: 'file', entries: contents };
-    const relative = contents.slice(1).map(({ path, file }) => ({ path: path.slice(entry.name.length + 1), file }));
-    return { name: entry.name, kind: 'folder', entries: relative };
+    await collectDropped(entry, contents, entry.isDirectory ? '' : entry.name);
+    return { name: entry.name, kind: entry.isDirectory ? 'folder' : 'file', entries: contents };
   }));
 }
 
 function packetBody(packet, mode, note) {
   const files = packet.entries.map(({ file }) => file).filter(Boolean);
   if (packet.entries.length > MAX_ENTRIES || files.reduce((sum, file) => sum + file.size, 0) > MAX_BYTES) {
-    throw new Error('The upload limit is 64 MiB and 2,048 items.');
+    throw new Error('The upload limit is 64 MiB and 10,000 items.');
   }
   const info = {
     name: packet.name, kind: packet.kind, mode, note,
@@ -80,44 +78,99 @@ function packetBody(packet, mode, note) {
 export function resources(base, afterUpload) {
   const viewer = assetBrowser(base, afterUpload);
   const search = $('asset-search');
+  const list = $('resources');
+  const empty = $('assets-empty');
+  const more = $('asset-more');
   let catalog = { files: [], codes: [] };
   let tab = 'all';
   let busy = false;
   let rendered;
+  let searchTimer;
+  let generation = 0;
+  let nextPage;
+
+  function setNext(action) {
+    nextPage = action;
+    more.hidden = !action;
+  }
+
+  function showEmpty(text) {
+    empty.textContent = text;
+    empty.hidden = !text;
+  }
 
   function render(value = catalog) {
     catalog = value;
-    const query = search.value.trim().toLowerCase();
+    const query = search.value.trim();
     const signature = JSON.stringify([tab, query, value]);
     if (signature === rendered) return;
     rendered = signature;
-    const list = $('resources');
+    const ticket = ++generation;
+    clearTimeout(searchTimer);
     list.replaceChildren();
+    setNext();
     const count = catalog.files.length + catalog.codes.length;
     $('asset-count').textContent = count;
     $('asset-count').hidden = !count;
     $('all-tab').setAttribute('aria-pressed', String(tab === 'all'));
     $('files-tab').setAttribute('aria-pressed', String(tab === 'files'));
     $('snippets-tab').setAttribute('aria-pressed', String(tab === 'codes'));
+    if (query) {
+      showEmpty('Searching…');
+      searchTimer = setTimeout(() => void searchPage(query, tab, 0, ticket), 180);
+      return;
+    }
     const source = tab === 'all' ? [...catalog.files, ...catalog.codes].sort((a, b) => b.created - a.created || b.id - a.id) : catalog[tab];
-    const items = source.filter(({ name }) => name.toLowerCase().includes(query));
-    $('assets-empty').hidden = items.length > 0;
-    $('assets-empty').textContent = query ? 'No assets match your search.' : { all: 'No assets yet. Drop files or folders here, or add a code snippet.', files: 'No files or folders yet.', codes: 'No code snippets yet.' }[tab];
+    showEmpty(source.length ? '' : {
+      all: 'No assets yet. Drop files or folders here, or add a code snippet.',
+      files: 'No files or folders yet.',
+      codes: 'No code snippets yet.',
+    }[tab]);
+    showPage(0);
+
+    function showPage(offset) {
+      appendCards(source.slice(offset, offset + GALLERY_PAGE));
+      const next = offset + GALLERY_PAGE;
+      setNext(next < source.length ? () => showPage(next) : undefined);
+    }
+  }
+
+  async function searchPage(query, category, offset, ticket) {
+    try {
+      const params = new URLSearchParams({ q: query, category, offset });
+      const result = await request(base + 'search?' + params);
+      if (ticket !== generation) return;
+      showEmpty(list.childElementCount || result.items.length ? '' : 'No files or assets match your search.');
+      appendCards(result.items);
+      setNext(result.next === null ? undefined : () => searchPage(query, category, result.next, ticket));
+    } catch (error) {
+      if (ticket === generation) {
+        showEmpty(error.message);
+        setNext(() => searchPage(query, category, offset, ticket));
+      }
+    }
+  }
+
+  function appendCards(items) {
+    const fragment = document.createDocumentFragment();
     for (const item of items) {
       const row = element('li');
-      const card = link('', assetHash({ id: item.id, version: item.num }), 'gallery-card');
-      card.setAttribute('aria-label', item.name + ' · v' + item.num);
+      const card = link('', assetHash({ id: item.id, version: item.num, path: item.path }), 'gallery-card');
+      card.setAttribute('aria-label', (item.path ? item.name + '/' + item.path : item.name) + ' · v' + item.num);
       const content = element('span', '', 'gallery-card-body');
       const top = element('span', '', 'gallery-card-top');
-      const icon = element('span', assetIcons[item.kind], 'gallery-icon');
+      const icon = element('span', assetIcons[item.entry_kind ?? item.kind], 'gallery-icon');
       icon.setAttribute('aria-hidden', 'true');
-      top.append(element('span', item.name, 'gallery-card-title'), element('span', 'v' + item.num, 'pill'));
+      const name = item.path ? item.path.split('/').at(-1) : item.name;
+      top.append(element('span', name, 'gallery-card-title'), element('span', 'v' + item.num, 'pill'));
       const type = item.kind === 'code' ? languageLabel(item.lang) : formatBytes(item.size);
-      content.append(top, element('span', [kindLabels[item.kind], type, item.author].join(' · '), 'gallery-card-meta'));
+      const location = item.path ? item.name + '/' + item.path : [kindLabels[item.kind], type, item.author].join(' · ');
+      content.append(top, element('span', location, 'gallery-card-meta'));
       card.append(icon, content);
       row.append(card);
-      list.append(row);
+      fragment.append(row);
     }
+    list.append(fragment);
   }
 
   async function save(packet) {
@@ -218,6 +271,7 @@ export function resources(base, afterUpload) {
   }
 
   search.addEventListener('input', () => render());
+  more.addEventListener('click', () => { if (nextPage) run(more, nextPage); });
 
   return { render, navigate: viewer.navigate, openAsset: viewer.open };
 }

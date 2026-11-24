@@ -14,6 +14,7 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 from wsgiref.util import setup_testing_defaults
 
+import assets
 from server import App
 
 ORIGIN = 'https://rooms.example.test'
@@ -282,6 +283,46 @@ class TempChatTest(unittest.TestCase):
         self.assertEqual(preview['type'], 'image')
         self.assertTrue(preview['source'].startswith('data:image/png;base64,'))
         self.assertEqual(base64.b64decode(preview['source'].split(',', 1)[1]), png)
+
+    def test_large_folder_search_pages_paths_in_latest_versions(self):
+        base = self.room()
+        entries = {f'inputs/{index:05}/' + 'report-' + 'a' * 105 + '.csv': b''
+                   for index in range(10_000)}
+        packet = make_packet('Project', 'folder', entries)
+        self.assertGreater(int.from_bytes(packet[:4], 'big'), assets.MAX_HEADER // 4)
+        item = self.save(packet)
+        url = base + f'assets/{item["asset"]}/1/preview'
+        self.assertEqual(len(self.call(self.ala, 200, 'GET', url)['entries']), 10_000)
+        self.call(self.ola, 401, 'GET', base + 'search?q=report')
+        search = base + 'search?q=report'
+        page = self.call(self.ala, 200, 'GET', search)
+        self.assertEqual(len(page['items']), 60)
+        self.assertEqual(page['next'], 60)
+        second = self.call(self.ala, 200, 'GET', search + '&offset=60')
+        self.assertTrue({item['path'] for item in page['items']}.isdisjoint(item['path'] for item in second['items']))
+        exact = self.call(self.ala, 200, 'GET', base + 'search?q=project%2Finputs%2F09999')
+        self.assertEqual([result['path'] for result in exact['items']], [next(reversed(entries))])
+        self.save(make_packet('Project', 'folder', {'docs/Notes.txt': b'notes'}, 'version'))
+        self.assertEqual(self.call(self.ala, 200, 'GET', search)['items'], [])
+        result = self.call(self.ala, 200, 'GET', base + 'search?q=notes&category=files')['items']
+        self.assertEqual([(hit['num'], hit['path']) for hit in result], [(2, 'docs/Notes.txt')])
+
+    def test_delimited_tables_decode_quotes_and_cap_large_previews(self):
+        base = self.room()
+        csv_source = '\ufeffcity;notes;value\r\nPoznań;"one; two";10\r\nŁódź;"line 1\nline 2";20\r\n'
+        item = self.save(make_packet('report.CSV', 'file', {'report.CSV': csv_source.encode()}))
+        preview = self.call(self.ala, 200, 'GET', base + f'assets/{item["asset"]}/1/preview')
+        self.assertEqual(preview['delimiter'], ';')
+        self.assertEqual(preview['rows'], [['city', 'notes', 'value'], ['Poznań', 'one; two', '10'],
+                                           ['Łódź', 'line 1\nline 2', '20']])
+        self.assertEqual(preview['text'], csv_source.lstrip('\ufeff'))
+        tsv_source = ('Name\tRole\nŁucja\tEditor\n' + 'A\tB\n' * 70_000).encode('utf-16')
+        item = self.save(make_packet('sheet.tsv', 'file', {'sheet.tsv': tsv_source}))
+        preview = self.call(self.ala, 200, 'GET', base + f'assets/{item["asset"]}/1/preview')
+        self.assertEqual(preview['rows'][:2], [['Name', 'Role'], ['Łucja', 'Editor']])
+        self.assertEqual(len(preview['rows']), 1000)
+        self.assertTrue(preview['source_limited'])
+        self.assertTrue(preview['rows_limited'])
 
     def test_latex_file_preview_and_snippet_download(self):
         base = self.room()

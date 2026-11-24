@@ -1,5 +1,7 @@
 """Atomic snapshots. Paths in a manifest are display data, never host paths."""
 import base64
+import codecs
+import csv
 import difflib
 import hashlib
 import io
@@ -8,14 +10,19 @@ import re
 import tempfile
 import unicodedata
 import zipfile
-from itertools import zip_longest
+from itertools import islice, zip_longest
 from pathlib import PurePosixPath
 
 MIB = 1024 * 1024
 MAX_BYTES = 64 * MIB
-MAX_ENTRIES = 2048
+MAX_HEADER = 4 * MIB
+MAX_ENTRIES = 10000
 ROOM_BYTES = 512 * MIB
 CODE_PATH = 'fragment'
+SEARCH_PAGE = 60
+TABLE_PREVIEW_BYTES = 512 * 1024
+TABLE_ROWS = 1000
+TABLE_COLUMNS = 100
 
 
 class Problem(Exception):
@@ -40,15 +47,15 @@ def path_name(value, nested=True):
 
 
 def unpack(stream, length):
-    require(4 <= length <= MAX_BYTES + MIB + 4, 413, 'The upload limit is 64 MiB.')
+    require(4 <= length <= MAX_BYTES + MAX_HEADER + 4, 413, 'The upload limit is 64 MiB plus the file list.')
     header_len = int.from_bytes(stream.read(4), 'big')
-    require(0 < header_len <= min(MIB, length - 4), 400, 'Invalid upload header.')
+    require(0 < header_len <= min(MAX_HEADER, length - 4), 400, 'Invalid upload header.')
     head = json.loads(stream.read(header_len))
     require(isinstance(head, dict), 400, 'Invalid upload metadata.')
     name = path_name(head.get('name'), False)
     kind, items, mode = head.get('kind'), head.get('entries'), head.get('mode')
     require(kind in ('folder', 'file') and isinstance(items, list) and len(items) <= MAX_ENTRIES,
-            400, 'Invalid file list. Uploads can contain up to 2,048 items.')
+            400, 'Invalid file list. Uploads can contain up to 10,000 items.')
     require(kind == 'folder' or len(items) == 1, 400, 'Expected one file.')
     require(mode in (None, 'copy', 'version'), 400, 'Invalid save mode.')
     remaining = length - header_len - 4
@@ -184,7 +191,43 @@ def snapshot(db, room, asset, num):
     return row, json.loads(row['manifest'])
 
 
-def preview(db, room, digest):
+def catalog(db, room):
+    return [dict(row) for row in db.execute(
+        'SELECT a.*,v.num,v.size,v.created,v.author,v.lang FROM assets a JOIN versions v ON v.asset=a.id '
+        'WHERE a.room=? AND v.num=(SELECT max(num) FROM versions WHERE asset=a.id) '
+        'ORDER BY v.created DESC,a.id DESC', (room,)
+    )]
+
+
+def search_paths(db, room, query, category, offset):
+    query = unicodedata.normalize('NFC', query).casefold()
+    items = [item for item in catalog(db, room)
+             if category == 'all' or (item['kind'] == 'code') == (category == 'codes')]
+
+    def matches():
+        for item in items:
+            if query in item['name'].casefold():
+                yield {**item, 'path': '', 'entry_kind': item['kind']}
+        for item in items:
+            if item['kind'] != 'folder':
+                continue
+            _, manifest = snapshot(db, room, item['id'], item['num'])
+            prefix = item['name'].casefold() + '/' if '/' in query else ''
+            for path, digest in manifest.items():
+                relative = path.casefold()
+                if query in relative or (prefix and query in prefix + relative):
+                    yield {**item, 'path': path, 'entry_kind': 'folder' if digest is None else 'file'}
+
+    results = list(islice(matches(), offset, offset + SEARCH_PAGE + 1))
+    return {'items': results[:SEARCH_PAGE], 'next': offset + SEARCH_PAGE if len(results) > SEARCH_PAGE else None}
+
+
+def preview(db, room, digest, path=''):
+    suffix = PurePosixPath(path).suffix.lower() if path else ''
+    if suffix in ('.csv', '.tsv'):
+        data = table_preview(db, room, digest, suffix)
+        if data is not None:
+            return data
     data = get_blob(db, room, digest, 5 * MIB)
     if data and (mime := raster_type(data)):
         return {'type': 'image', 'source': 'data:' + mime + ';base64,' + base64.b64encode(data).decode('ascii')}
@@ -198,6 +241,56 @@ def preview(db, room, digest):
         except (UnicodeError, zipfile.BadZipFile):
             pass
     return {'type':'binary', 'text':'Preview unavailable. Download the file to open it.'}
+
+
+def table_preview(db, room, digest, suffix):
+    blob = db.execute('SELECT substr(data,1,?) AS sample,length(data) AS size FROM blobs WHERE room=? AND digest=?',
+                      (TABLE_PREVIEW_BYTES, room, digest)).fetchone()
+    if not blob:
+        return None
+    sample = blob['sample']
+    source_limited = blob['size'] > len(sample)
+    encoding = 'utf-16' if sample.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) else 'utf-8-sig'
+    try:
+        source = codecs.getincrementaldecoder(encoding)().decode(sample, final=not source_limited)
+    except UnicodeError:
+        return None
+    if '\0' in source:
+        return None
+    delimiter = '\t' if suffix == '.tsv' else ','
+    if suffix == '.csv':
+        try:
+            delimiter = csv.Sniffer().sniff(source[:16384], delimiters=',;\t').delimiter
+        except csv.Error:
+            pass
+    complete = source
+    if source_limited:
+        complete = source[:max(source.rfind('\n'), source.rfind('\r')) + 1]
+    reader = csv.reader(io.StringIO(complete, newline=''), delimiter=delimiter, strict=True)
+    entries = []
+    columns = 0
+    rows_limited = source_limited
+    invalid = False
+    try:
+        for row in reader:
+            if len(entries) == TABLE_ROWS:
+                rows_limited = True
+                break
+            columns = max(columns, len(row))
+            entries.append(row[:TABLE_COLUMNS])
+    except csv.Error:
+        invalid = not source_limited
+    return {
+        'type': 'table',
+        'text': source,
+        'rows': entries,
+        'columns': min(columns, TABLE_COLUMNS),
+        'rows_limited': rows_limited,
+        'columns_limited': columns > TABLE_COLUMNS,
+        'source_limited': source_limited,
+        'invalid': invalid,
+        'delimiter': delimiter,
+    }
 
 
 def raster_type(data):

@@ -4,6 +4,8 @@ import { markdownHtml } from './markdown.mjs';
 
 const order = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const changeLabels = { added: 'Added', removed: 'Removed', changed: 'Modified' };
+const FILE_PAGE = 120;
+const TABLE_PAGE = 75;
 
 export function assetHash({ id, version, path = '', mode = 'preview', from }) {
   const query = new URLSearchParams();
@@ -93,6 +95,85 @@ function sourcePreview(text, language) {
   lines.append(gutter, pre);
   scroll.append(lines);
   return scroll;
+}
+
+function pagedList(list, items, createRow) {
+  let offset = 0;
+  let footer;
+  function appendPage() {
+    footer?.remove();
+    const page = document.createDocumentFragment();
+    for (const item of items.slice(offset, offset + FILE_PAGE)) page.append(createRow(item));
+    offset += FILE_PAGE;
+    list.append(page);
+    if (offset < items.length) {
+      footer = element('li', '', 'list-more');
+      footer.append(button('Show more', appendPage, 'quiet'));
+      list.append(footer);
+    }
+  }
+  appendPage();
+  return list;
+}
+
+function columnName(index) {
+  let label = '';
+  do {
+    label = String.fromCharCode(65 + index % 26) + label;
+    index = Math.floor(index / 26) - 1;
+  } while (index >= 0);
+  return label;
+}
+
+function tablePreview(data) {
+  const panel = element('div', '', 'asset-table');
+  const scroll = element('div', '', 'asset-table-scroll');
+  scroll.tabIndex = 0;
+  scroll.setAttribute('aria-label', 'Tabular preview');
+  const table = element('table');
+  const head = element('thead');
+  const labels = element('tr');
+  const rowNumber = element('th', '#');
+  rowNumber.scope = 'col';
+  labels.append(rowNumber);
+  for (let index = 0; index < data.columns; index++) {
+    const label = element('th', columnName(index));
+    label.scope = 'col';
+    labels.append(label);
+  }
+  head.append(labels);
+  const rows = element('tbody');
+  table.append(head, rows);
+  scroll.append(table);
+  if (data.rows.length) panel.append(scroll);
+  else panel.append(element('p', 'No rows to display.', 'asset-empty'));
+  if (data.rows_limited || data.columns_limited) {
+    panel.append(element('p', 'This preview shows part of the file. Download it to see all rows and columns.', 'asset-empty'));
+  }
+  if (data.invalid) panel.append(element('p', 'Some rows could not be read. Open Source to inspect the file.', 'asset-empty'));
+  const more = button('Show more rows', appendRows);
+  more.classList.add('asset-more');
+  panel.append(more);
+  let offset = 0;
+  appendRows();
+  return panel;
+
+  function appendRows() {
+    const fragment = document.createDocumentFragment();
+    for (const [index, values] of data.rows.slice(offset, offset + TABLE_PAGE).entries()) {
+      const row = element('tr');
+      const label = element('th', String(offset + index + 1));
+      label.scope = 'row';
+      row.append(label);
+      for (let column = 0; column < data.columns; column++) {
+        row.append(element('td', values[column] ?? ''));
+      }
+      fragment.append(row);
+    }
+    rows.append(fragment);
+    offset += TABLE_PAGE;
+    more.hidden = offset >= data.rows.length;
+  }
 }
 
 function diffCell(line, state = '', prefix = '') {
@@ -330,11 +411,11 @@ export function assetBrowser(base, afterWrite) {
     if (query) {
       const matches = Array.from(index.nodes.values()).filter((node) => node.path && node.path.toLowerCase().includes(query));
       const list = element('ul', '', 'tree-list search-results');
-      for (const node of matches) {
+      pagedList(list, matches, (node) => {
         const item = element('li');
         item.append(pathLink(node, node.path));
-        list.append(item);
-      }
+        return item;
+      });
       tree.replaceChildren(matches.length ? list : element('p', 'No matching paths.', 'asset-empty'));
       return;
     }
@@ -344,7 +425,7 @@ export function assetBrowser(base, afterWrite) {
 
     function renderBranches(nodes) {
       const list = element('ul', '', 'tree-list');
-      for (const node of nodes) {
+      return pagedList(list, nodes, (node) => {
         const item = element('li');
         const row = element('div', '', 'tree-row');
         if (node.dir) {
@@ -372,9 +453,8 @@ export function assetBrowser(base, afterWrite) {
         row.append(pathLink(node));
         item.append(row);
         if (node.dir && expanded.has(node.path)) item.append(renderBranches(node.children));
-        list.append(item);
-      }
-      return list;
+        return item;
+      });
     }
   }
 
@@ -430,11 +510,11 @@ export function assetBrowser(base, afterWrite) {
     const node = index?.nodes.get(route.path);
     if (node?.dir) {
       const list = element('ul', '', 'folder-rows');
-      for (const child of node.children) {
+      pagedList(list, node.children, (child) => {
         const item = element('li');
         item.append(pathLink(child, child.name, 'folder-link'));
-        list.append(item);
-      }
+        return item;
+      });
       const empty = route.mode === 'changes' ? 'No changes in this folder.' : 'This folder is empty.';
       content.replaceChildren(node.children.length ? list : element('p', empty, 'asset-empty'));
       return;
@@ -473,28 +553,37 @@ export function assetBrowser(base, afterWrite) {
     const extension = filename.includes('.') ? filename.split('.').at(-1).toLowerCase() : '';
     const language = preview.lang ?? extension;
     const markdown = preview.type === 'text' && asset.kind !== 'code' && ['md', 'markdown'].includes(extension);
+    const table = preview.type === 'table';
     const actions = element('div', '', 'source-toolbar');
     const body = element('div', '', 'source-body');
-    const label = preview.type === 'zip' ? 'ZIP contents'
+    const label = preview.type === 'zip' ? 'ZIP contents' : table ? extension.toUpperCase() + ' · ' + preview.rows.length + ' rows'
       : [markdown ? 'Markdown' : languageLabel(language), lineCount(preview.text) + ' lines'].filter(Boolean).join(' · ');
     actions.append(element('span', label, 'muted'));
     const copy = button('Copy', () => copyText(preview.text, 'Copied.'));
-    if (markdown) {
+    if (markdown || table) {
       const flip = button('Source', () => {
         const showSource = flip.textContent === 'Source';
-        flip.textContent = showSource ? 'Rendered' : 'Source';
-        if (showSource) body.replaceChildren(sourcePreview(preview.text, language));
-        else renderMarkdown();
+        flip.textContent = showSource ? (table ? 'Table' : 'Rendered') : 'Source';
+        if (showSource) {
+          body.replaceChildren(sourcePreview(preview.text, table ? '' : language));
+          if (preview.source_limited) body.prepend(element('p', 'This is a partial source preview.', 'asset-empty'));
+        } else {
+          renderFormatted();
+        }
       });
       actions.append(flip);
-      renderMarkdown();
+      renderFormatted();
     } else {
       body.append(sourcePreview(preview.text, language));
     }
     actions.append(copy);
     content.replaceChildren(actions, body);
 
-    function renderMarkdown() {
+    function renderFormatted() {
+      if (table) {
+        body.replaceChildren(tablePreview(preview));
+        return;
+      }
       const rendered = element('div', '', 'markdown-message asset-markdown');
       rendered.innerHTML = markdownHtml(preview.text);
       body.replaceChildren(rendered);
