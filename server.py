@@ -375,7 +375,13 @@ class App:
                     return {'type': 'text', 'text': assets.get_blob(db, room, manifest[path]).decode(), 'lang': row['lang']}
                 return assets.preview(db,room,manifest[path])
             payload = assets.get_blob(db,room,manifest[path])
-            filename = row['name'] + '.txt' if row['kind'] == 'code' else path.split('/')[-1]
+            if row['kind'] == 'code':
+                suffix = '.tex' if row['lang'] in ('tex', 'latex') else '.txt'
+                filename = row['name']
+                if suffix == '.txt' or not filename.lower().endswith(suffix):
+                    filename += suffix
+            else:
+                filename = path.split('/')[-1]
         else:
             payload = assets.archive(db,room,row['name'],manifest)
             filename = row['name']+'.zip'

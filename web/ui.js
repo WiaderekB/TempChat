@@ -141,6 +141,7 @@ export function formatBytes(size) {
 export const assetIcons = { folder: '▱', file: '▤', code: '</>' };
 
 export function languageLabel(value) {
+  if (value === 'latex') return 'LaTeX';
   return Array.from($('language').options).find((option) => option.value === value)?.textContent ?? value;
 }
 
@@ -263,12 +264,16 @@ export function snippetPicker(field, list, onSelect) {
 
 const tokens = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|(\b(?:and|as|async|await|break|case|catch|class|const|continue|def|else|except|false|False|finally|for|from|function|if|import|in|let|new|None|null|or|pass|private|public|raise|return|static|throw|true|True|try|var|void|while|with|yield)\b)|(\b\d+(?:\.\d+)?\b)/g;
 
+const latexTokens = /(\\(?:[A-Za-z@]+|[^\r\n]))|(%[^\r\n]*)|(\$\$?|[{}\[\]&_^])|(\b\d+(?:\.\d+)?\b)/g;
+
 export function highlightSource(code, source, language) {
   if (language && source.length < 32000) {
+    const latex = language === 'tex' || language === 'latex';
+    const styles = latex ? ['keyword', 'comment', 'delimiter', 'number'] : ['string', 'comment', 'keyword', 'number'];
     let offset = 0;
-    for (const match of source.matchAll(tokens)) {
+    for (const match of source.matchAll(latex ? latexTokens : tokens)) {
       if (match.index > offset) code.append(source.slice(offset, match.index));
-      const style = ['string', 'comment', 'keyword', 'number'][match.slice(1).findIndex(Boolean)];
+      const style = styles[match.slice(1).findIndex(Boolean)];
       code.append(element('span', match[0], 'syntax-' + style));
       offset = match.index + match[0].length;
     }

@@ -283,6 +283,21 @@ class TempChatTest(unittest.TestCase):
         self.assertTrue(preview['source'].startswith('data:image/png;base64,'))
         self.assertEqual(base64.b64decode(preview['source'].split(',', 1)[1]), png)
 
+    def test_latex_file_preview_and_snippet_download(self):
+        base = self.room()
+        source = r'\section{Wstęp}' + '\n'
+        data = source.encode()
+        uploaded = self.save(make_packet('notes.tex', 'file', {'notes.tex': data}))
+        self.assertEqual(self.call(self.ala, 200, 'GET', base + f'assets/{uploaded["asset"]}/1/preview'),
+                         {'type': 'text', 'text': source})
+        for title, expected in [('Notes', 'Notes.tex'), ('Outline.TeX', 'Outline.TeX')]:
+            with self.subTest(title=title):
+                fragment = self.call(self.ala, 200, 'POST', base + 'messages',
+                                     {'kind': 'code', 'title': title, 'lang': 'tex', 'body': source})
+                status, payload, headers = self.ala.call('GET', base + f'assets/{fragment["asset"]}/1/download')
+                self.assertEqual((status, payload), (200, data))
+                self.assertEqual(headers['Content-Disposition'], "attachment; filename*=UTF-8''" + expected)
+
     def test_concurrent_uploads_have_distinct_versions(self):
         self.room()
         self.call(self.ola, 200, 'POST', self.base + 'join', {'nick': 'Ola'})

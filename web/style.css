@@ -200,6 +200,7 @@ pre { background: #101619; border: 1px solid var(--line); color: #dae8ef; border
 .syntax-comment { color: #9ab1b9; }
 .syntax-keyword { color: #cbb5ff; }
 .syntax-number { color: #ffd495; }
+.syntax-delimiter { color: #9cdae7; }
 .msg-asset { display: flex; justify-content: flex-start; background: transparent; border-color: transparent; padding: 0; min-height: 1.7rem; text-align: left; max-width: 100%; overflow-wrap: anywhere; }
 .msg-asset:hover { background: transparent; color: var(--accent); }
 .attachment-note { margin-top: .25rem; }
