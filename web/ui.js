@@ -135,6 +135,15 @@ export function languageLabel(value) {
   return Array.from($('language').options).find((option) => option.value === value)?.textContent ?? value;
 }
 
+export function selectLanguage(select, value) {
+  if (!Array.from(select.options).some((option) => option.value === value)) {
+    const option = element('option', value);
+    option.value = value;
+    select.append(option);
+  }
+  select.value = value;
+}
+
 const tokens = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|(\b(?:and|as|async|await|break|case|catch|class|const|continue|def|else|except|false|False|finally|for|from|function|if|import|in|let|new|None|null|or|pass|private|public|raise|return|static|throw|true|True|try|var|void|while|with|yield)\b)|(\b\d+(?:\.\d+)?\b)/g;
 
 export function codeBlock(source, language, { diff = false, heading } = {}) {

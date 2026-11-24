@@ -319,10 +319,17 @@ class App:
         match = re.fullmatch(r'rooms/(\d{6})',action)
         if match:
             room = self.room(db,match[1],now)
+            if method == 'GET':
+                return dict(room)
             if method == 'PATCH':
-                hours = retention(req.body())
-                db.execute('UPDATE rooms SET hours=?,expires=expires+3600*(?-hours) WHERE code=?',(hours,hours,match[1]))
-                return {'ok':True}
+                data = req.body()
+                require('title' in data or 'hours' in data, 400, 'Provide a room name or retention period.')
+                title = field(data, 'title', 80) if 'title' in data else room['title']
+                hours = retention(data) if 'hours' in data else room['hours']
+                expires = room['expires'] + 3600 * (hours - room['hours'])
+                db.execute('UPDATE rooms SET title=?,hours=?,expires=? WHERE code=?',
+                           (title, hours, expires, room['code']))
+                return {'ok': True, 'room': {**dict(room), 'title': title, 'hours': hours, 'expires': expires}}
             if method == 'DELETE':
                 db.execute('DELETE FROM rooms WHERE code=?',(room['code'],))
                 return {'ok':True}

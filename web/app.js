@@ -1,5 +1,5 @@
 import { $, element, button, link, request, run, formAction, notify, showError, present, choose,
-  copyText, dateTime, codeBlock } from './ui.js';
+  copyText, dateTime, codeBlock, selectLanguage } from './ui.js';
 import { resources } from './files.js';
 
 const viewIds = ['join-view', 'room-view', 'login-view', 'admin-view'];
@@ -7,6 +7,7 @@ const roomLink = (code) => '/r/' + code;
 const fullLink = (code) => new URL(roomLink(code), location.origin).href;
 const roomAPI = (code) => '/api/room/' + code + '/';
 const adminAPI = '/api/admin/';
+const adminRoomAPI = (code) => adminAPI + 'rooms/' + code;
 const digits = (value) => value.replace(/[^0-9]/g, '').slice(0, 6);
 const formatCode = (value) => value.length > 3 ? value.slice(0, 3) + ' - ' + value.slice(3) : value;
 const shortTime = new Intl.DateTimeFormat('en-GB', { timeStyle: 'short' });
@@ -49,8 +50,15 @@ function activateRoom(code, initial) {
   const latest = $('jump-latest');
   const input = $('message-text');
   const form = $('message-form');
+  const submitMessage = form.querySelector('button[type=submit]');
+  const snippetTarget = $('snippet-target');
+  const snippetName = $('snippet-title');
+  const language = $('language');
   const chat = $('chat-screen');
   const gallery = $('gallery-screen');
+  const management = $('manage-screen');
+  const manageLink = $('manage-link');
+  const settingsFields = { title: $('manage-name'), hours: $('manage-hours') };
   const assets = resources(base, refreshSoon);
   let mode = 'text';
   let last = 0;
@@ -63,11 +71,21 @@ function activateRoom(code, initial) {
   let followLatest = true;
   let people = [];
   let peopleModal;
+  let roomSettings;
+  let checkingManagement = false;
+  let nextManagementCheck = 0;
+  let snippetChoices;
+  let selectedSnippet = '';
+  let newSnippetLanguage = '';
+
+  function setRoomTitle(name) {
+    const title = $('room-title');
+    title.textContent = name;
+    title.title = name;
+  }
 
   function state(data) {
-    const title = $('room-title');
-    title.textContent = data.room.title;
-    title.title = data.room.title;
+    setRoomTitle(data.room.title);
     $('room-code').textContent = formatCode(code);
     $('people-count').textContent = data.people.length;
     $('show-people').setAttribute('aria-label', 'Participants: ' + data.people.length);
@@ -180,21 +198,94 @@ function activateRoom(code, initial) {
 
   function showScreen() {
     const showGallery = location.hash === '#assets' || location.hash === '#zasoby';
-    if (showGallery && !chat.hidden) {
+    const activeLink = location.hash === '#manage' && !manageLink.hidden ? 'manage-link'
+      : showGallery ? 'gallery-link' : 'chat-link';
+    const showChat = activeLink === 'chat-link';
+    if (!showChat && !chat.hidden) {
       savedScroll = scroller.scrollTop;
       followLatest = nearBottom();
     }
-    const restorePosition = !showGallery && chat.hidden;
-    chat.hidden = showGallery;
-    gallery.hidden = !showGallery;
-    $('chat-link').toggleAttribute('aria-current', !showGallery);
-    $('gallery-link').toggleAttribute('aria-current', showGallery);
-    $(showGallery ? 'gallery-link' : 'chat-link').setAttribute('aria-current', 'page');
+    const restorePosition = showChat && chat.hidden;
+    chat.hidden = !showChat;
+    gallery.hidden = activeLink !== 'gallery-link';
+    management.hidden = activeLink !== 'manage-link';
+    for (const id of ['chat-link', 'gallery-link', 'manage-link']) {
+      if (id === activeLink) $(id).setAttribute('aria-current', 'page');
+      else $(id).removeAttribute('aria-current');
+    }
     if (restorePosition) {
       if (followLatest) scrollToLatest();
       else scroller.scrollTop = savedScroll;
     }
   }
+
+  function showManagementLink(allowed) {
+    if (!allowed) roomSettings = undefined;
+    if (manageLink.hidden === !allowed) return;
+    manageLink.hidden = !allowed;
+    showScreen();
+  }
+
+  function applyRoomSettings(room, submitted = {}) {
+    for (const [key, field] of Object.entries(settingsFields)) {
+      if (!roomSettings || field.value === String(roomSettings[key]) || field.value === submitted[key]) {
+        field.value = room[key];
+      }
+    }
+    roomSettings = room;
+  }
+
+  async function checkManagement() {
+    if (!alive || checkingManagement) return;
+    checkingManagement = true;
+    nextManagementCheck = Date.now() + 30000;
+    const previous = roomSettings;
+    try {
+      const room = await request(adminRoomAPI(code));
+      if (!alive) return;
+      if (roomSettings === previous) applyRoomSettings(room);
+      showManagementLink(true);
+    } catch (error) {
+      if (alive && (error.status === 401 || error.status === 404)) showManagementLink(false);
+    } finally {
+      checkingManagement = false;
+    }
+  }
+
+  function managementError(error) {
+    if (error.status !== 401) throw error;
+    showManagementLink(false);
+    notify(error.message, true);
+  }
+
+  formAction($('room-settings-form'), async () => {
+    showError($('manage-error'));
+    const draft = { title: settingsFields.title.value, hours: settingsFields.hours.value };
+    const data = {};
+    if (draft.title.trim() !== roomSettings.title) data.title = draft.title;
+    if (settingsFields.hours.valueAsNumber !== roomSettings.hours) data.hours = settingsFields.hours.valueAsNumber;
+    if (!Object.keys(data).length) return notify('No changes to save.');
+    try {
+      const { room } = await request(adminRoomAPI(code), { method: 'PATCH', data });
+      applyRoomSettings(room, draft);
+      setRoomTitle(room.title);
+      notify('Room settings saved.');
+    } catch (error) {
+      managementError(error);
+    }
+  }, (message) => showError($('manage-error'), message));
+
+  const close = $('manage-close');
+  close.addEventListener('click', () => run(close, async () => {
+    try {
+      if (!await closeRoom(code)) return;
+      alive = false;
+      clearTimeout(timer);
+      location.assign('/admin');
+    } catch (error) {
+      managementError(error);
+    }
+  }));
 
   async function updateChat() {
     const starting = !last;
@@ -236,6 +327,7 @@ function activateRoom(code, initial) {
   async function sync() {
     if (!alive || polling) return;
     polling = true;
+    if (!document.hidden && Date.now() >= nextManagementCheck) void checkManagement();
     let nextDelay = 1800;
     try {
       const data = await request(base + 'state');
@@ -247,6 +339,7 @@ function activateRoom(code, initial) {
         const catalog = await request(base + 'catalog');
         if (!alive) return;
         assets.render(catalog);
+        renderSnippetChoices(catalog.codes);
         catalogAt = data.last;
       }
     } catch (error) {
@@ -270,6 +363,37 @@ function activateRoom(code, initial) {
     void sync();
   }
 
+  function renderSnippetChoices(codes) {
+    const choices = codes.map(({ id, name, lang }) => [String(id), name, lang]);
+    const signature = JSON.stringify(choices);
+    if (signature === snippetChoices) return;
+    snippetChoices = signature;
+    const options = choices.map(([id, name, lang]) => {
+      const option = element('option', name);
+      option.value = id;
+      option.dataset.language = lang;
+      return option;
+    });
+    snippetTarget.replaceChildren(snippetTarget.options[0], ...options);
+    snippetTarget.hidden = !options.length;
+    if (choices.some(([id]) => id === selectedSnippet)) snippetTarget.value = selectedSnippet;
+    else if (selectedSnippet) selectSnippet();
+  }
+
+  function updateSubmitLabel() {
+    const label = mode === 'code' && selectedSnippet ? 'Save version' : 'Send';
+    submitMessage.textContent = label;
+    submitMessage.title = label + ' (Ctrl or Command + Enter)';
+  }
+
+  function selectSnippet() {
+    if (!selectedSnippet) newSnippetLanguage = language.value;
+    selectedSnippet = snippetTarget.value;
+    snippetName.hidden = Boolean(selectedSnippet);
+    selectLanguage(language, selectedSnippet ? snippetTarget.selectedOptions[0].dataset.language : newSnippetLanguage);
+    updateSubmitLabel();
+  }
+
   function setMode(value, focus = input) {
     mode = value;
     const codeMode = mode === 'code';
@@ -278,13 +402,17 @@ function activateRoom(code, initial) {
     input.classList.toggle('code-mode', codeMode);
     input.placeholder = codeMode ? 'Paste or type code…' : 'Write a message…';
     input.spellcheck = !codeMode;
+    updateSubmitLabel();
     focus?.focus();
   }
+  snippetTarget.addEventListener('change', selectSnippet);
   $('code-mode').addEventListener('click', () => setMode(mode === 'code' ? 'text' : 'code'));
   $('add-code').addEventListener('click', () => {
     location.hash = '#chat';
     showScreen();
-    setMode('code', $('snippet-title'));
+    snippetTarget.value = '';
+    selectSnippet();
+    setMode('code', snippetName);
   });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -298,15 +426,25 @@ function activateRoom(code, initial) {
   });
   formAction(form, async () => {
     const sent = input.value;
-    const title = $('snippet-title').value;
+    const title = snippetName.value;
+    const target = selectedSnippet;
     const kind = mode;
-    await request(base + 'messages', { method: 'POST',
-      data: { kind, body: sent, title, lang: kind === 'code' ? $('language').value : '' } });
+    const data = { kind, body: sent };
+    if (kind === 'code') {
+      data.lang = language.value;
+      if (target) data.asset = Number(target);
+      else data.title = title;
+    }
+    await request(base + 'messages', { method: 'POST', data });
     if (input.value === sent) {
       input.value = '';
-      if (kind === 'code' && mode === 'code') setMode('text', null);
+      if (kind === 'code' && selectedSnippet === target) {
+        if (snippetName.value === title) snippetName.value = '';
+        snippetTarget.value = '';
+        selectSnippet();
+        if (mode === 'code') setMode('text', null);
+      }
     }
-    if ($('snippet-title').value === title) $('snippet-title').value = '';
     if (!chat.hidden) input.focus();
     scrollToLatest();
     refreshSoon();
@@ -323,13 +461,31 @@ function activateRoom(code, initial) {
     clearTimeout(timer);
     location.assign('/');
   }));
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshSoon(); });
-  window.addEventListener('hashchange', showScreen);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+      void checkManagement();
+      refreshSoon();
+    }
+  });
+  window.addEventListener('hashchange', () => {
+    showScreen();
+    if (location.hash === '#manage') void checkManagement();
+  });
   state(initial);
   connected(true);
   assets.render();
   showScreen();
+  void checkManagement();
   refreshSoon();
+}
+
+async function closeRoom(code) {
+  const confirmed = await choose('Close room ' + formatCode(code) + '?',
+    'Closing the room immediately deletes its messages, code, files, folders, and version history.',
+    [['close', 'Close and delete data', 'danger']]);
+  if (!confirmed) return false;
+  await request(adminRoomAPI(code), { method: 'DELETE' });
+  return true;
 }
 
 let adminTimer;
@@ -347,11 +503,7 @@ function roomCard(room) {
     button('Copy link', () => copyText(fullLink(room.code), 'Room link copied.')),
     button('Edit retention', () => changeRetention(room)),
     button('Close', async () => {
-      const confirmed = await choose('Close room ' + formatCode(room.code) + '?',
-        'Closing the room immediately deletes its messages, code, files, folders, and version history.',
-        [['close', 'Close and delete data', 'danger']]);
-      if (!confirmed) return;
-      await request(adminAPI + 'rooms/' + room.code, { method: 'DELETE' });
+      if (!await closeRoom(room.code)) return;
       await loadRooms();
       notify('Room closed.');
     }, 'danger'),
@@ -377,7 +529,7 @@ function changeRetention(room) {
   form.append(label, input, submit);
   modal.body.append(form);
   formAction(form, async () => {
-    await request(adminAPI + 'rooms/' + room.code, { method: 'PATCH', data: { hours: input.valueAsNumber } });
+    await request(adminRoomAPI(room.code), { method: 'PATCH', data: { hours: input.valueAsNumber } });
     modal.el.close();
     await loadRooms();
     notify('Retention updated.');

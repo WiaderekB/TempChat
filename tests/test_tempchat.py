@@ -269,6 +269,26 @@ class TempChatTest(unittest.TestCase):
             for table in ['rooms', 'members', 'messages', 'assets', 'versions', 'blobs']:
                 self.assertEqual(db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
 
+    def test_room_settings_require_admin_and_support_partial_updates(self):
+        base = self.room()
+        path = '/api/admin/rooms/' + self.code
+        self.call(self.ala, 401, 'GET', path)
+        self.call(self.ala, 401, 'PATCH', path, {'title': 'Unauthorized'})
+        original = self.call(self.admin, 200, 'GET', path)
+
+        renamed = self.call(self.admin, 200, 'PATCH', path, {'title': '  Updated name  '})['room']
+        self.assertEqual(renamed, {**original, 'title': 'Updated name'})
+        self.assertEqual(self.call(self.ala, 200, 'GET', base + 'state')['room']['title'], 'Updated name')
+
+        extended = self.call(self.admin, 200, 'PATCH', path, {'hours': 36})['room']
+        self.assertEqual(extended, {**renamed, 'hours': 36, 'expires': renamed['expires'] + 12 * 3600})
+        self.call(self.admin, 400, 'PATCH', path, {})
+        self.call(self.admin, 400, 'PATCH', path, {'title': 'Rejected', 'hours': 1})
+        self.assertEqual(self.call(self.admin, 200, 'GET', path), extended)
+
+        self.call(self.admin, 200, 'POST', '/api/admin/logout')
+        self.call(self.admin, 401, 'GET', path)
+
     def test_retention_rejoin_restart_and_sweep(self):
         base = self.room()
         path = '/api/admin/rooms/' + self.code

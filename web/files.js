@@ -1,4 +1,5 @@
-import { $, element, button, link, request, present, choose, notify, codeBlock, dateTime, formAction, languageLabel } from './ui.js';
+import { $, element, button, link, request, present, choose, notify, codeBlock, dateTime, formAction,
+  languageLabel, selectLanguage } from './ui.js';
 
 const MAX_ENTRIES = 2048;
 const MAX_BYTES = 64 * 1024 * 1024;
@@ -212,12 +213,7 @@ export function resources(base, afterUpload) {
     const form = element('form', '', 'dialog-form');
     const language = $('language').cloneNode(true);
     language.id = 'version-language';
-    if (![...language.options].some((item) => item.value === current.lang)) {
-      const option = element('option', current.lang);
-      option.value = current.lang;
-      language.append(option);
-    }
-    language.value = current.lang;
+    selectLanguage(language, current.lang);
     const code = element('textarea');
     code.id = 'version-code';
     code.value = current.text;

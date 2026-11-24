@@ -58,6 +58,7 @@
       <nav class="room-nav" aria-label="Room navigation">
         <a href="#chat" id="chat-link" aria-current="page">Chat</a>
         <a href="#assets" id="gallery-link">Assets <span id="asset-count" class="pill" hidden></span></a>
+        <a href="#manage" id="manage-link" hidden>Manage</a>
       </nav>
       <div class="room-actions">
         <button class="quiet" type="button" id="show-people" aria-haspopup="dialog" title="Participants"><span class="people-icon" aria-hidden="true"></span><span id="people-count">0</span></button>
@@ -82,6 +83,8 @@
           <button type="button" id="jump-latest" hidden>Jump to latest</button>
           <form id="message-form" class="composer">
             <div id="code-fields" class="code-fields" hidden>
+              <label class="sr-only" for="snippet-target">Snippet to update</label>
+              <select id="snippet-target" hidden><option value="">New snippet</option></select>
               <label class="sr-only" for="snippet-title">Snippet name</label>
               <input id="snippet-title" maxlength="80" placeholder="Snippet name (optional)">
               <label class="sr-only" for="language">Language</label>
@@ -127,6 +130,28 @@
       <p class="gallery-drop" id="file-drop">Drop files or folders to upload</p>
       <p id="assets-empty" class="empty gallery-empty"></p>
       <ul id="resources" class="gallery-grid"></ul>
+    </section>
+
+    <section id="manage-screen" class="room-management" aria-label="Manage room" hidden>
+      <div class="management-grid">
+        <section class="panel management-panel" aria-labelledby="settings-title">
+          <h2 id="settings-title">Room settings</h2>
+          <form id="room-settings-form">
+            <label for="manage-name">Room name</label>
+            <input id="manage-name" maxlength="80" required>
+            <label for="manage-hours">Retention after everyone leaves</label>
+            <input id="manage-hours" type="number" min="24" max="8760" step="1" required aria-describedby="manage-hours-hint">
+            <p id="manage-hours-hint" class="muted">24 to 8,760 hours.</p>
+            <p class="error" id="manage-error" role="alert" hidden></p>
+            <button class="primary" type="submit">Save changes</button>
+          </form>
+        </section>
+        <section class="panel management-panel" aria-labelledby="close-room-title">
+          <h2 id="close-room-title">Close room</h2>
+          <p class="muted">Ends the room for everyone and permanently deletes its contents.</p>
+          <button class="danger" type="button" id="manage-close">Close room</button>
+        </section>
+      </div>
     </section>
   </main>
 
