@@ -1,4 +1,5 @@
 """Atomic snapshots. Paths in a manifest are display data, never host paths."""
+import base64
 import difflib
 import hashlib
 import io
@@ -7,6 +8,7 @@ import re
 import tempfile
 import unicodedata
 import zipfile
+from itertools import zip_longest
 from pathlib import PurePosixPath
 
 MIB = 1024 * 1024
@@ -183,8 +185,10 @@ def snapshot(db, room, asset, num):
 
 
 def preview(db, room, digest):
-    data = get_blob(db, room, digest, 256 * 1024)
-    if data is not None:
+    data = get_blob(db, room, digest, 5 * MIB)
+    if data and (mime := raster_type(data)):
+        return {'type': 'image', 'source': 'data:' + mime + ';base64,' + base64.b64encode(data).decode('ascii')}
+    if data is not None and len(data) <= 256 * 1024:
         try:
             if data.startswith(b'PK\x03\x04') or data.startswith(b'PK\x05\x06'):
                 with zipfile.ZipFile(io.BytesIO(data)) as z:
@@ -196,7 +200,18 @@ def preview(db, room, digest):
     return {'type':'binary', 'text':'Preview unavailable. Download the file to open it.'}
 
 
-def changes(old, new):
+def raster_type(data):
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if data.startswith((b'GIF87a', b'GIF89a')):
+        return 'image/gif'
+    if data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+        return 'image/webp'
+
+
+def changes(old, new, details=False):
     result = []
     for path in sorted(old.keys() | new.keys()):
         if path not in old:
@@ -207,26 +222,57 @@ def changes(old, new):
             state = 'changed'
         else:
             continue
-        result.append({'path':path,'state':state})
+        item = {'path': path, 'state': state}
+        if details:
+            item['dir'] = (new[path] if path in new else old[path]) is None
+        result.append(item)
     return result
 
 
-def diff_text(db, room, old, new, path):
+def diff_lines(db, room, old, new, path):
     require(path in old or path in new, 404, 'File not found.')
     lines = []
     for version in (old,new):
         digest = version.get(path)
         data = get_blob(db, room, digest, 64 * 1024) if digest else b''
         if data is None or b'\0' in data:
-            return 'A text diff is unavailable for this file.'
+            return None, 'A text diff is unavailable for this file.'
         try:
             lines.append(data.decode().splitlines(keepends=True))
         except UnicodeError:
-            return 'Binary file.'
+            return None, 'Binary file.'
     if max(map(len, lines)) > 2000:
-        return 'This file exceeds the 2,000-line diff limit.'
+        return None, 'This file exceeds the 2,000-line diff limit.'
+    return lines, ''
+
+
+def diff_text(db, room, old, new, path):
+    lines, notice = diff_lines(db, room, old, new, path)
+    if notice:
+        return notice
     return ''.join(line if line.endswith('\n') else line+'\n' for line in
                    difflib.unified_diff(*lines, fromfile='previous', tofile='selected')) or 'No text changes.'
+
+
+def diff_blocks(db, room, old, new, path):
+    lines, notice = diff_lines(db, room, old, new, path)
+    if notice:
+        return {'blocks': [], 'notice': notice}
+    before, after = lines
+    blocks = []
+    for group in difflib.SequenceMatcher(None, before, after, autojunk=False).get_grouped_opcodes(3):
+        block = []
+        for tag, i1, i2, j1, j2 in group:
+            left = enumerate(before[i1:i2], i1 + 1)
+            right = enumerate(after[j1:j2], j1 + 1)
+            for old_line, new_line in zip_longest(left, right):
+                block.append({
+                    'before': [old_line[0], old_line[1].rstrip('\r\n')] if old_line else None,
+                    'after': [new_line[0], new_line[1].rstrip('\r\n')] if new_line else None,
+                    'changed': tag != 'equal',
+                })
+        blocks.append(block)
+    return {'blocks': blocks, 'notice': '' if blocks else 'No text changes.'}
 
 
 def archive(db, room, name, manifest):

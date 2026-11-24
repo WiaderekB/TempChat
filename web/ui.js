@@ -131,6 +131,15 @@ export function dateTime(epoch) {
   }).format(epoch * 1000);
 }
 
+export function formatBytes(size) {
+  if (size < 1024) return size + ' B';
+  const scale = size < 1024 ** 2 ? 1024 : 1024 ** 2;
+  return new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(size / scale)
+    + (scale === 1024 ? ' KiB' : ' MiB');
+}
+
+export const assetIcons = { folder: '▱', file: '▤', code: '</>' };
+
 export function languageLabel(value) {
   return Array.from($('language').options).find((option) => option.value === value)?.textContent ?? value;
 }
@@ -254,7 +263,22 @@ export function snippetPicker(field, list, onSelect) {
 
 const tokens = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)|(\b(?:and|as|async|await|break|case|catch|class|const|continue|def|else|except|false|False|finally|for|from|function|if|import|in|let|new|None|null|or|pass|private|public|raise|return|static|throw|true|True|try|var|void|while|with|yield)\b)|(\b\d+(?:\.\d+)?\b)/g;
 
-export function codeBlock(source, language, { diff = false, heading } = {}) {
+export function highlightSource(code, source, language) {
+  if (language && source.length < 32000) {
+    let offset = 0;
+    for (const match of source.matchAll(tokens)) {
+      if (match.index > offset) code.append(source.slice(offset, match.index));
+      const style = ['string', 'comment', 'keyword', 'number'][match.slice(1).findIndex(Boolean)];
+      code.append(element('span', match[0], 'syntax-' + style));
+      offset = match.index + match[0].length;
+    }
+    code.append(source.slice(offset));
+  } else {
+    code.textContent = source;
+  }
+}
+
+export function codeBlock(source, language, { heading } = {}) {
   const wrap = element('div', '', 'code-card');
   const tools = element('div', '', 'code-tools');
   const labels = element('div', '', 'code-labels');
@@ -266,27 +290,11 @@ export function codeBlock(source, language, { diff = false, heading } = {}) {
     const excerpt = source.split('\n', 9).slice(0, 8).join('\n').slice(0, 6000);
     if (excerpt.length < source.trimEnd().length) visible = excerpt + '\n…';
   }
-  if (!heading || language) labels.append(element('span', diff ? 'Diff' : languageLabel(language)));
+  if (!heading || language) labels.append(element('span', languageLabel(language)));
   pre.tabIndex = 0;
-  pre.setAttribute('aria-label', diff ? 'Version diff' : 'Code preview');
+  pre.setAttribute('aria-label', 'Code preview');
   tools.append(labels, button('Copy', () => copyText(source)));
-  if (diff) {
-    for (const line of visible.split(/(?<=\n)/)) {
-      const style = line.startsWith('+') ? 'diff-added' : line.startsWith('-') ? 'diff-removed' : '';
-      code.append(style ? element('span', line, style) : document.createTextNode(line));
-    }
-  } else if (language && visible.length < 32000) {
-    let offset = 0;
-    for (const match of visible.matchAll(tokens)) {
-      if (match.index > offset) code.append(visible.slice(offset, match.index));
-      const style = ['string', 'comment', 'keyword', 'number'][match.slice(1).findIndex(Boolean)];
-      code.append(element('span', match[0], 'syntax-' + style));
-      offset = match.index + match[0].length;
-    }
-    code.append(visible.slice(offset));
-  } else {
-    code.textContent = visible;
-  }
+  highlightSource(code, visible, language);
   pre.append(code);
   wrap.append(tools, pre);
   return wrap;

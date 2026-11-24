@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 PRESENCE = 90
 STATIC = {'/': 'index.html', '/admin': 'index.html', '/app.js': 'app.js',
           '/files.js': 'files.js', '/ui.js': 'ui.js', '/style.css': 'style.css',
+          '/asset-view.js': 'asset-view.js',
           '/markdown.mjs': 'markdown.mjs', '/vendor/markdown-it.mjs': 'vendor/markdown-it.mjs'}
 MIME = {'.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css'}
 
@@ -354,10 +355,15 @@ class App:
             return assets.revision(db,room,asset,member,now,f'Restored v{num}',manifest,row['size'],snippet,row['lang'])
         require(req.method == 'GET' and op != 'restore',405,'Method not allowed.')
         if op == 'changes':
-            old = assets.snapshot(db,room,asset,int(num)-1)[1] if int(num)>1 else {}
+            base = req.arg('from', str(int(num)-1))
+            require(re.fullmatch(r'[0-9]{1,19}', base) and int(base) < int(num),
+                    400, 'Choose an earlier version to compare.')
+            old = assets.snapshot(db, room, asset, int(base))[1] if int(base) else {}
             if path:
+                if req.arg('format') == 'split':
+                    return assets.diff_blocks(db, room, old, manifest, path)
                 return {'text':assets.diff_text(db,room,old,manifest,path)}
-            return assets.changes(old,manifest)
+            return assets.changes(old, manifest, details=req.arg('format') == 'split')
         if op == 'preview' and not path and row['kind']=='folder':
             return {'type':'folder','entries':[{'path':p,'dir':v is None} for p,v in sorted(manifest.items())]}
         if not path and row['kind'] != 'folder':

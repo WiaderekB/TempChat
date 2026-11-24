@@ -56,6 +56,7 @@ function activateRoom(code, initial) {
   const language = $('language');
   const chat = $('chat-screen');
   const gallery = $('gallery-screen');
+  const assetScreen = $('asset-screen');
   const management = $('manage-screen');
   const manageLink = $('manage-link');
   const settingsFields = { title: $('manage-name'), hours: $('manage-hours') };
@@ -201,7 +202,8 @@ function activateRoom(code, initial) {
   }
 
   function showScreen() {
-    const showGallery = location.hash === '#assets' || location.hash === '#zasoby';
+    const showAsset = assets.navigate(location.hash);
+    const showGallery = showAsset || location.hash === '#assets' || location.hash === '#zasoby';
     const activeLink = location.hash === '#manage' && !manageLink.hidden ? 'manage-link'
       : showGallery ? 'gallery-link' : 'chat-link';
     const showChat = activeLink === 'chat-link';
@@ -211,7 +213,8 @@ function activateRoom(code, initial) {
     }
     const restorePosition = showChat && chat.hidden;
     chat.hidden = !showChat;
-    gallery.hidden = activeLink !== 'gallery-link';
+    gallery.hidden = activeLink !== 'gallery-link' || showAsset;
+    assetScreen.hidden = !showAsset;
     management.hidden = activeLink !== 'manage-link';
     for (const id of ['chat-link', 'gallery-link', 'manage-link']) {
       if (id === activeLink) $(id).setAttribute('aria-current', 'page');

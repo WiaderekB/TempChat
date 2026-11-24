@@ -3,8 +3,8 @@
 Tymczasowe pokoje do rozmów i przenoszenia projektów między komputerami. Administrator tworzy pokój, a uczestnicy dołączają nickiem i kodem w formacie `123 - 456` lub linkiem.
 
 - Czat z wyróżnieniem własnych wiadomości, rozwijanym podglądem długiego tekstu i licznikiem uczestników otwierającym ich listę.
-- Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Folder można pobrać jako ZIP albo pobrać z niego pojedynczy plik.
-- Historia wersji, podgląd tekstu, lista zmian w folderze i porównanie tekstu. Przywrócenie zapisuje kolejną wersję.
+- Osobna galeria z nazwanymi fragmentami kodu, plikami i całymi folderami. Przeglądarka zasobów ma drzewo ścieżek, wyszukiwanie i podgląd plików. Folder można pobrać jako ZIP albo pobrać z niego pojedynczy plik.
+- Historia wersji i porównanie tekstu w dwóch kolumnach lub w jednym widoku. Przywrócenie zapisuje kolejną wersję.
 - Panel administratora pod `/admin` pozwala utworzyć pokój, zmienić czas przechowywania i zamknąć pokój z natychmiastowym usunięciem danych.
 
 Pokój pozostaje dostępny po rozłączeniu ostatniego uczestnika. Domyślnie wygasa po 24 godzinach bez osób online. Pole retencji w panelu przyjmuje wartości od 1 do 8760 godzin. Zamknięcie lub wygaśnięcie usuwa z bazy wiadomości, fragmenty kodu, pliki, wersje i sesje uczestników. Pobrane kopie pozostają na urządzeniach uczestników. Pełne puste katalogi można przesłać przez przeciągnięcie folderu lub systemowy wybór katalogu w przeglądarkach obsługujących File System Access API. Zastępczy selektor folderu opiera się na liście plików, więc pomija puste katalogi.

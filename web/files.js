@@ -1,19 +1,10 @@
-import { $, element, button, link, request, present, choose, notify, codeBlock, dateTime, formAction,
-  languageLabel, selectLanguage } from './ui.js';
+import { $, element, link, request, choose, notify, languageLabel, formatBytes, assetIcons } from './ui.js';
+import { assetBrowser, assetHash } from './asset-view.js';
 
 const MAX_ENTRIES = 2048;
 const MAX_BYTES = 64 * 1024 * 1024;
 const MAX_HEADER = 1024 * 1024;
-const icons = { folder: '▱', file: '▤', code: '</>' };
-const changesLabels = { added: 'Added', removed: 'Removed', changed: 'Changed' };
 const kindLabels = { folder: 'Folder', file: 'File', code: 'Code' };
-
-function bytes(size) {
-  if (size < 1024) return size + ' B';
-  const scale = size < 1024 ** 2 ? 1024 : 1024 ** 2;
-  return new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(size / scale)
-    + (scale === 1024 ? ' KiB' : ' MiB');
-}
 
 function filePackets(files) {
   return Array.from(files, (file) => ({ name: file.name, kind: 'file', entries: [{ path: file.name, file }] }));
@@ -86,17 +77,9 @@ function packetBody(packet, mode, note) {
   return new Blob([prefix, header, ...files], { type: 'application/octet-stream' });
 }
 
-function resourceButton(name, description, kind, action) {
-  const control = button('', action, 'list-button');
-  const nameBlock = element('span', name);
-  if (description) nameBlock.append(element('span', description, 'item-subtitle'));
-  const icon = element('span', icons[kind], 'item-icon');
-  icon.setAttribute('aria-hidden', 'true');
-  control.append(icon, nameBlock);
-  return control;
-}
-
 export function resources(base, afterUpload) {
+  const viewer = assetBrowser(base, afterUpload);
+  const search = $('asset-search');
   let catalog = { files: [], codes: [] };
   let tab = 'all';
   let busy = false;
@@ -104,7 +87,8 @@ export function resources(base, afterUpload) {
 
   function render(value = catalog) {
     catalog = value;
-    const signature = JSON.stringify([tab, value]);
+    const query = search.value.trim().toLowerCase();
+    const signature = JSON.stringify([tab, query, value]);
     if (signature === rendered) return;
     rendered = signature;
     const list = $('resources');
@@ -115,138 +99,25 @@ export function resources(base, afterUpload) {
     $('all-tab').setAttribute('aria-pressed', String(tab === 'all'));
     $('files-tab').setAttribute('aria-pressed', String(tab === 'files'));
     $('snippets-tab').setAttribute('aria-pressed', String(tab === 'codes'));
-    const items = tab === 'all' ? [...catalog.files, ...catalog.codes].sort((a, b) => b.created - a.created || b.id - a.id) : catalog[tab];
+    const source = tab === 'all' ? [...catalog.files, ...catalog.codes].sort((a, b) => b.created - a.created || b.id - a.id) : catalog[tab];
+    const items = source.filter(({ name }) => name.toLowerCase().includes(query));
     $('assets-empty').hidden = items.length > 0;
-    $('assets-empty').textContent = { all: 'No assets yet. Drop files or folders here, or add a code snippet.', files: 'No files or folders yet.', codes: 'No code snippets yet.' }[tab];
+    $('assets-empty').textContent = query ? 'No assets match your search.' : { all: 'No assets yet. Drop files or folders here, or add a code snippet.', files: 'No files or folders yet.', codes: 'No code snippets yet.' }[tab];
     for (const item of items) {
       const row = element('li');
-      const card = button('', () => openAsset(item.id, item.num, item.name), 'gallery-card');
+      const card = link('', assetHash({ id: item.id, version: item.num }), 'gallery-card');
       card.setAttribute('aria-label', item.name + ' · v' + item.num);
       const content = element('span', '', 'gallery-card-body');
       const top = element('span', '', 'gallery-card-top');
-      const icon = element('span', icons[item.kind], 'gallery-icon');
+      const icon = element('span', assetIcons[item.kind], 'gallery-icon');
       icon.setAttribute('aria-hidden', 'true');
       top.append(element('span', item.name, 'gallery-card-title'), element('span', 'v' + item.num, 'pill'));
-      const type = item.kind === 'code' ? languageLabel(item.lang) : bytes(item.size);
+      const type = item.kind === 'code' ? languageLabel(item.lang) : formatBytes(item.size);
       content.append(top, element('span', [kindLabels[item.kind], type, item.author].join(' · '), 'gallery-card-meta'));
       card.append(icon, content);
       row.append(card);
       list.append(row);
     }
-  }
-
-  async function openAsset(id, initial, title) {
-    const url = base + 'assets/' + id;
-    const modal = present(title);
-    modal.body.textContent = 'Loading…';
-    try {
-      const asset = await request(url);
-      const select = element('select');
-      select.setAttribute('aria-label', 'Version');
-      for (const revision of asset.history) {
-        const option = element('option', 'v' + revision.num + ' · ' + dateTime(revision.created));
-        option.value = revision.num;
-        select.append(option);
-      }
-      select.value = initial;
-      const tools = element('div', '', 'small-actions');
-      const toolbar = element('div', '', 'version-toolbar');
-      const info = element('div');
-      const detail = element('div');
-      toolbar.append(select, tools);
-      modal.body.replaceChildren(toolbar, info, detail);
-
-      async function showVersion() {
-        const revision = asset.history.find((item) => item.num === Number(select.value));
-        if (!revision) return;
-        modal.error('');
-        const prefix = url + '/' + revision.num;
-        const snippet = asset.kind === 'code';
-        tools.replaceChildren(link(asset.kind === 'folder' ? 'Download ZIP' : 'Download', prefix + '/download'),
-          button('Preview', () => preview()),
-          button('Changes', () => showChanges()));
-        if (snippet) tools.append(button('New version', () => editSnippet(asset, revision, prefix), 'primary'));
-        if (revision.num !== asset.history[0].num) {
-          tools.append(button('Restore', async () => {
-            const restore = await choose('Restore version', 'A copy of v' + revision.num + ' will become the latest version.',
-              [['restore', 'Restore version', 'primary']]);
-            if (!restore) {
-              await openAsset(id, revision.num, title);
-              return;
-            }
-            const result = await request(prefix + '/restore', { method: 'POST' });
-            afterUpload();
-            await openAsset(id, result.num, title);
-            notify('Version restored.');
-          }));
-        }
-        info.replaceChildren(element('p', revision.author + ' · ' + bytes(revision.size), 'muted version-meta'));
-        if (revision.note) info.append(element('p', revision.note));
-        const content = element('div');
-        detail.replaceChildren(content);
-        await preview();
-
-        async function preview() {
-          const view = element('div', 'Loading…');
-          content.replaceChildren(view);
-          await renderPreview(prefix, view, asset.name).catch((error) => { view.textContent = error.message; });
-        }
-
-        async function showChanges() {
-          const view = element('div', 'Loading…');
-          content.replaceChildren(view);
-          await renderChanges(prefix, view, snippet).catch((error) => { view.textContent = error.message; });
-        }
-      }
-
-      select.addEventListener('change', () => showVersion().catch((error) => modal.error(error.message)));
-      await showVersion();
-    } catch (error) {
-      modal.body.textContent = '';
-      modal.error(error.message);
-    }
-  }
-
-  async function editSnippet(asset, revision, prefix) {
-    const current = await request(prefix + '/preview');
-    const modal = present('New version · ' + asset.name);
-    const form = element('form', '', 'dialog-form');
-    const language = $('language').cloneNode(true);
-    language.id = 'version-language';
-    selectLanguage(language, current.lang);
-    const code = element('textarea');
-    code.id = 'version-code';
-    code.value = current.text;
-    code.rows = 9;
-    code.maxLength = 64000;
-    code.required = true;
-    code.spellcheck = false;
-    code.className = 'mono';
-    const note = element('input');
-    note.id = 'version-note';
-    note.maxLength = 200;
-    for (const [name, control] of [
-      ['Language', language], ['Code', code], ['Change note (optional)', note],
-    ]) {
-      const label = element('label', name);
-      label.htmlFor = control.id;
-      form.append(label, control);
-    }
-    const actions = element('div', '', 'small-actions');
-    const submit = element('button', 'Save version', 'primary');
-    submit.type = 'submit';
-    actions.append(submit, button('Cancel', () => openAsset(asset.id, revision.num, asset.name)));
-    form.append(actions);
-    modal.body.append(form);
-    code.focus();
-    formAction(form, async () => {
-      const saved = await request(base + 'messages', {
-        method: 'POST',
-        data: { kind: 'code', asset: asset.id, body: code.value, lang: language.value, note: note.value },
-      });
-      afterUpload();
-      await openAsset(asset.id, saved.num, asset.name);
-    }, modal.error);
   }
 
   async function save(packet) {
@@ -346,69 +217,7 @@ export function resources(base, afterUpload) {
     $(id).addEventListener('click', () => { tab = filter; render(); });
   }
 
-  return { render, openAsset };
-}
+  search.addEventListener('input', () => render());
 
-async function renderPreview(prefix, target, name) {
-  const data = await request(prefix + '/preview');
-  if (data.type !== 'folder') {
-    target.replaceChildren(previewText(data, name));
-    return;
-  }
-  const rows = element('ul', '', 'entries');
-  const detail = element('div');
-  for (const item of data.entries) {
-    const row = element('li');
-    if (item.dir) {
-      row.className = 'entry-directory';
-      row.textContent = item.path + '/';
-    } else {
-      row.append(resourceButton(item.path, '', 'file', async () => {
-        const query = '?path=' + encodeURIComponent(item.path);
-        const panel = element('div', '', 'entry-detail');
-        panel.append(element('p', item.path, 'entry-path'), link('Download file', prefix + '/download' + query));
-        detail.replaceChildren(panel);
-        try {
-          panel.append(previewText(await request(prefix + '/preview' + query), item.path));
-        } catch (error) {
-          panel.append(element('p', error.message, 'error'));
-        }
-      }));
-    }
-    rows.append(row);
-  }
-  target.replaceChildren(rows, detail);
-  if (!data.entries.length) target.append(element('p', 'Empty folder.', 'empty'));
-}
-
-function previewText(data, name) {
-  if (data.type === 'binary') return element('p', data.text, 'muted');
-  if (data.type === 'zip') return codeBlock(data.text, 'ZIP contents');
-  const extension = data.lang ?? (name.includes('.') ? name.split('.').at(-1).toLowerCase() : '');
-  return codeBlock(data.text, extension);
-}
-
-async function renderChanges(prefix, target, snippet) {
-  if (snippet) {
-    const result = await request(prefix + '/changes?path=fragment');
-    target.replaceChildren(codeBlock(result.text, '', { diff: true }));
-    return;
-  }
-  const data = await request(prefix + '/changes');
-  target.replaceChildren();
-  if (!data.length) {
-    target.append(element('p', 'No changes from the previous version.', 'empty'));
-    return;
-  }
-  const rows = element('ul', '', 'entries');
-  const detail = element('div');
-  for (const change of data) {
-    const row = element('li', '', 'entry-file ' + change.state);
-    row.append(resourceButton(change.path, changesLabels[change.state], 'file', async () => {
-      const result = await request(prefix + '/changes?path=' + encodeURIComponent(change.path));
-      detail.replaceChildren(codeBlock(result.text, '', { diff: true }));
-    }));
-    rows.append(row);
-  }
-  target.append(rows, detail);
+  return { render, navigate: viewer.navigate, openAsset: viewer.open };
 }

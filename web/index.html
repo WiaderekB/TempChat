@@ -116,6 +116,8 @@
     <section id="gallery-screen" class="gallery" aria-labelledby="gallery-title" hidden>
       <h2 id="gallery-title" class="sr-only">Asset gallery</h2>
       <div class="gallery-toolbar">
+        <label for="asset-search" class="sr-only">Search room assets</label>
+        <input id="asset-search" class="asset-search" type="search" placeholder="Search assets…">
         <div class="segmented" aria-label="Filter assets">
           <button type="button" id="all-tab" aria-pressed="true">All</button>
           <button type="button" id="files-tab" aria-pressed="false">Files &amp; folders</button>
@@ -132,6 +134,45 @@
       <p class="gallery-drop" id="file-drop">Drop files or folders to upload</p>
       <p id="assets-empty" class="empty gallery-empty"></p>
       <ul id="resources" class="gallery-grid"></ul>
+    </section>
+
+    <section id="asset-screen" class="asset-screen" aria-label="Asset browser" hidden>
+      <header class="asset-toolbar">
+        <div class="asset-title-group">
+          <a class="button quiet" href="#assets">All assets</a>
+          <span id="asset-title-divider" aria-hidden="true">/</span>
+          <h2 id="asset-title"></h2>
+        </div>
+        <div class="asset-controls" id="asset-controls" hidden>
+          <label class="sr-only" for="asset-version">Version</label>
+          <select id="asset-version"></select>
+          <nav class="asset-modes" aria-label="Asset views">
+            <a class="button quiet" id="asset-preview-link">Preview</a>
+            <a class="button quiet" id="asset-changes-link">Changes</a>
+          </nav>
+          <div class="asset-actions" id="asset-actions"></div>
+        </div>
+      </header>
+      <div class="asset-workspace" id="asset-workspace" hidden>
+        <aside class="asset-sidebar" aria-label="Asset files">
+          <div class="asset-sidebar-head">
+            <h3 id="asset-tree-title">Files</h3>
+            <label class="sr-only" for="asset-find">Find a file or folder</label>
+            <input id="asset-find" type="search" placeholder="Find a file or folder…">
+          </div>
+          <div class="asset-tree" id="asset-tree"></div>
+        </aside>
+        <article class="asset-detail">
+          <div class="asset-pathbar">
+            <button id="asset-tree-toggle" class="quiet" type="button" aria-expanded="false" aria-controls="asset-tree">Files</button>
+            <nav id="asset-breadcrumb" class="asset-breadcrumb" aria-label="Asset path"></nav>
+            <div class="asset-path-actions" id="asset-path-actions"></div>
+          </div>
+          <div class="asset-revision" id="asset-revision"></div>
+          <div class="asset-content" id="asset-content"></div>
+        </article>
+      </div>
+      <p class="asset-status muted" id="asset-status" role="status" hidden></p>
     </section>
 
     <section id="manage-screen" class="room-management" aria-label="Manage room" hidden>

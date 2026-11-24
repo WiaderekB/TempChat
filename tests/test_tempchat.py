@@ -1,3 +1,4 @@
+import base64
 import io
 import json
 import sqlite3
@@ -99,7 +100,7 @@ class TempChatTest(unittest.TestCase):
         return self.call(client or self.ala, expected, 'POST', self.base + 'assets', data)
 
     def test_static_pages_and_health(self):
-        for path in ('/', '/admin', '/r/001234', '/app.js', '/files.js', '/ui.js', '/style.css',
+        for path in ('/', '/admin', '/r/001234', '/app.js', '/asset-view.js', '/files.js', '/ui.js', '/style.css',
                      '/markdown.mjs', '/vendor/markdown-it.mjs'):
             with self.subTest(path=path):
                 self.assertTrue(self.call(self.ala, 200, 'GET', path))
@@ -247,6 +248,40 @@ class TempChatTest(unittest.TestCase):
                 self.save(make_packet('Test', 'folder', {path: b'x'}), 400)
         self.save(make_packet('Test', 'folder', {'a': b'file', 'a/b': b'child'}), 400)
         self.assertEqual(self.call(self.ala, 200, 'GET', base + 'catalog')['files'], [])
+
+    def test_split_diff_compares_selected_versions_and_includes_removed_paths(self):
+        base = self.room()
+        name, path = 'Project', 'src/app.js'
+        first = self.save(make_packet(name, 'folder', {
+            path: b'const total = 1;\nreturn total;\n',
+            'archive': None,
+            'old.txt': b'legacy\n',
+        }))
+        self.save(make_packet(name, 'folder', {path: b'const total = 2;\nreturn total;\n'}, 'version'))
+        self.save(make_packet(name, 'folder', {
+            path: b'const total = 3;\nreturn total;\n', 'new.txt': b'new\n',
+        }, 'version'))
+        url = base + f'assets/{first["asset"]}/3/changes'
+        changes = self.call(self.ala, 200, 'GET', url + '?format=split&from=1')
+        self.assertIn({'path': 'archive', 'state': 'removed', 'dir': True}, changes)
+        self.assertIn({'path': 'old.txt', 'state': 'removed', 'dir': False}, changes)
+        diff = self.call(self.ala, 200, 'GET', url + '?format=split&from=1&path=src%2Fapp.js')
+        self.assertEqual(diff['blocks'], [[
+            {'before': [1, 'const total = 1;'], 'after': [1, 'const total = 3;'], 'changed': True},
+            {'before': [2, 'return total;'], 'after': [2, 'return total;'], 'changed': False},
+        ]])
+        removed = self.call(self.ala, 200, 'GET', url + '?format=split&from=1&path=old.txt')
+        self.assertEqual(removed['blocks'], [[{'before': [1, 'legacy'], 'after': None, 'changed': True}]])
+        self.call(self.ala, 400, 'GET', url + '?from=3')
+
+    def test_raster_image_preview(self):
+        base = self.room()
+        png = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/WloAAAAASUVORK5CYII=')
+        item = self.save(make_packet('pixel.png', 'file', {'pixel.png': png}))
+        preview = self.call(self.ala, 200, 'GET', base + f'assets/{item["asset"]}/1/preview')
+        self.assertEqual(preview['type'], 'image')
+        self.assertTrue(preview['source'].startswith('data:image/png;base64,'))
+        self.assertEqual(base64.b64decode(preview['source'].split(',', 1)[1]), png)
 
     def test_concurrent_uploads_have_distinct_versions(self):
         self.room()
