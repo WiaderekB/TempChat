@@ -14,6 +14,92 @@ const formatCode = (value) => value.length > 3 ? value.slice(0, 3) + ' - ' + val
 const shortTime = new Intl.DateTimeFormat('en-GB', { timeStyle: 'short' });
 const shortDay = new Intl.DateTimeFormat('en-GB', { dateStyle: 'long' });
 
+function localDateValue(epoch) {
+  const date = new Date(epoch * 1000);
+  const pad = (value) => String(value).padStart(2, '0');
+  return String(date.getFullYear()).padStart(4, '0') + '-' + pad(date.getMonth() + 1) + '-' +
+    pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+}
+
+function closureDraft({ hours, close_at }) {
+  return { mode: close_at == null ? 'idle' : 'scheduled', hours: String(hours),
+    date: close_at == null ? '' : localDateValue(close_at) };
+}
+
+function sameClosure(left, right) {
+  return left.mode === right.mode && left.hours === right.hours && left.date === right.date;
+}
+
+function closureFields(prefix) {
+  const node = element('div', '', 'expiry-fields');
+  const mode = element('select');
+  for (const [value, text] of [['idle', 'After everyone leaves'], ['scheduled', 'At a specific date and time']]) {
+    const option = element('option', text);
+    option.value = value;
+    mode.append(option);
+  }
+  const hours = element('input');
+  hours.type = 'number';
+  hours.min = '1';
+  hours.max = '8760';
+  hours.step = '1';
+  hours.required = true;
+  const date = element('input');
+  date.type = 'datetime-local';
+  date.required = true;
+  const modeField = wrap('mode', 'Automatically close', mode);
+  const idleField = wrap('hours', 'Hours after everyone leaves', hours, '1 to 8,760 hours.');
+  const dateField = wrap('date', 'Closing date and time', date,
+    'Time zone: ' + Intl.DateTimeFormat().resolvedOptions().timeZone);
+  node.append(modeField, idleField, dateField);
+  mode.addEventListener('change', reflectMode);
+  fill({ hours: 24, close_at: null });
+
+  function wrap(key, title, control, hint) {
+    const group = element('div', '', 'expiry-field');
+    const label = element('label', title);
+    control.id = prefix + '-' + key;
+    label.htmlFor = control.id;
+    group.append(label, control);
+    if (hint) {
+      const help = element('p', hint, 'muted');
+      help.id = control.id + '-hint';
+      control.setAttribute('aria-describedby', help.id);
+      group.append(help);
+    }
+    return group;
+  }
+
+  function reflectMode() {
+    const fixed = mode.value === 'scheduled';
+    hours.disabled = idleField.hidden = fixed;
+    date.disabled = dateField.hidden = !fixed;
+  }
+
+  function fill(room) {
+    const draft = closureDraft(room);
+    mode.value = draft.mode;
+    hours.value = draft.hours;
+    date.value = draft.date;
+    reflectMode();
+  }
+
+  function read(previous) {
+    if (mode.value === 'scheduled') {
+      if (previous?.close_at != null && date.value === localDateValue(previous.close_at)) return {};
+      const epoch = new Date(date.value).getTime() / 1000;
+      if (!Number.isFinite(epoch) || localDateValue(epoch) !== date.value) {
+        throw new Error('Choose a valid date and time in your time zone.');
+      }
+      return { close_at: epoch };
+    }
+    if (previous?.close_at === null && hours.valueAsNumber === previous.hours) return {};
+    return { hours: hours.valueAsNumber, close_at: null };
+  }
+
+  return { node, fill, read, draft: () => ({ mode: mode.value, hours: hours.value, date: date.value }) };
+}
+
 function view(id) {
   for (const panel of viewIds) $(panel).hidden = panel !== id;
   const admin = id === 'admin-view' || id === 'login-view';
@@ -39,7 +125,8 @@ formAction($('join-form'), async () => {
   showError($('join-error'));
   const code = digits($('join-code').value);
   await request(roomAPI(code) + 'join', { method: 'POST', data: { nick: $('join-nick').value } });
-  location.assign(roomLink(code) + location.hash);
+  if (location.pathname === roomLink(code)) location.reload();
+  else location.assign(roomLink(code) + location.hash);
 }, (message) => showError($('join-error'), message));
 
 function activateRoom(code, initial) {
@@ -52,6 +139,8 @@ function activateRoom(code, initial) {
   const input = $('message-text');
   const form = $('message-form');
   const submitMessage = form.querySelector('button[type=submit]');
+  const uploadProgress = $('chat-upload-progress');
+  const searchButton = $('chat-search');
   const attachMenu = $('attach-menu');
   const attachToggle = $('attach-toggle');
   const pending = $('pending-attachments');
@@ -63,7 +152,9 @@ function activateRoom(code, initial) {
   const assetScreen = $('asset-screen');
   const management = $('manage-screen');
   const manageLink = $('manage-link');
-  const settingsFields = { title: $('manage-name'), hours: $('manage-hours') };
+  const settingsName = $('manage-name');
+  const expiry = closureFields('manage');
+  $('manage-expiry').append(expiry.node);
   const assets = resources(base, refreshSoon);
   let mode = 'text';
   let attachments = [];
@@ -81,6 +172,7 @@ function activateRoom(code, initial) {
   let assetReturn = '#assets';
   let people = [];
   let peopleModal;
+  let chatSearch;
   let roomSettings;
   let checkingManagement = false;
   let nextManagementCheck = 0;
@@ -128,7 +220,12 @@ function activateRoom(code, initial) {
     $('connection').title = label;
   }
 
-  function message(data) {
+  function openChatAsset(id, version) {
+    chatSearch?.el.close();
+    assets.openAsset(id, version);
+  }
+
+  function message(data, context = false) {
     const row = element('li', '', 'message' + (data.mine ? ' is-mine' : ''));
     const content = element('div', '', 'message-content' + (data.kind === 'code' ? ' has-code' : ''));
     const meta = element('div', '', 'msg-meta');
@@ -146,29 +243,29 @@ function activateRoom(code, initial) {
       let heading;
       if (data.asset) {
         heading = button(data.name + ' · v' + data.num,
-          () => assets.openAsset(data.asset, data.num, data.name), 'snippet-heading');
+          () => openChatAsset(data.asset, data.num), 'snippet-heading');
         heading.title = 'Open full version';
       }
       bubble.append(codeBlock(data.body, data.lang, { heading }));
     } else if (data.kind === 'asset' || data.kind === 'share') {
-      if (data.kind === 'share' && data.body.trim()) appendMessageText(bubble, data);
+      if (data.kind === 'share' && data.body.trim()) appendMessageText(bubble, data, context);
       const cards = element('div', '', 'chat-attachments');
       for (const item of data.attachments ?? [{ ...data, kind: data.asset_kind }]) {
-        const card = button('', () => assets.openAsset(item.asset, item.num, item.name), 'chat-attachment');
+        const card = button('', () => openChatAsset(item.asset, item.num), 'chat-attachment');
         card.append(assetCover(item.kind, item.name), attachmentLabel(item));
         cards.append(card);
       }
       bubble.append(cards);
       if (data.kind === 'asset' && data.body) bubble.append(element('p', data.body, 'msg-text muted attachment-note'));
     } else {
-      appendMessageText(bubble, data);
+      appendMessageText(bubble, data, context);
     }
     content.append(meta, bubble);
     row.append(content);
     return row;
   }
 
-  function appendMessageText(bubble, data) {
+  function appendMessageText(bubble, data, context) {
     const text = element('div', '', 'msg-text markdown-message');
     const excerpt = data.body.split('\n').slice(0, 12).join('\n').slice(0, 900).trimEnd();
     const shortened = excerpt.length < data.body.trimEnd().length;
@@ -176,7 +273,7 @@ function activateRoom(code, initial) {
     text.innerHTML = preview;
     bubble.append(text);
     if (shortened) {
-      text.id = 'message-' + data.id;
+      text.id = (context ? 'context-message-' : 'message-') + data.id;
       const toggle = button('Show full message', () => {
         const expand = toggle.getAttribute('aria-expanded') === 'false';
         toggle.setAttribute('aria-expanded', String(expand));
@@ -207,6 +304,7 @@ function activateRoom(code, initial) {
         day = created;
       }
       const row = message(item);
+      row.id = 'chat-line-' + item.id;
       row.dataset.day = created;
       fragment.append(row);
     }
@@ -215,6 +313,111 @@ function activateRoom(code, initial) {
       list.prepend(fragment);
     } else {
       list.append(fragment);
+    }
+  }
+
+  iconControl(searchButton, 'search', 'Search chat');
+  searchButton.title = 'Search chat (/)';
+  searchButton.addEventListener('click', openChatSearch);
+
+  function openChatSearch() {
+    if (chatSearch) return;
+    const modal = present('Search chat');
+    chatSearch = modal;
+    modal.el.addEventListener('close', () => { chatSearch = undefined; }, { once: true });
+    const form = element('form', '', 'chat-search-form');
+    const query = element('input');
+    query.type = 'search';
+    query.required = true;
+    query.maxLength = 160;
+    query.placeholder = 'Messages, names, or files…';
+    query.setAttribute('aria-label', 'Search term');
+    const submit = element('button', 'Search', 'primary');
+    submit.type = 'submit';
+    form.append(query, submit);
+    const resultPanel = element('div', '', 'chat-search-panel');
+    const results = element('ul', '', 'chat-search-results');
+    const status = element('p', '', 'muted');
+    status.setAttribute('role', 'status');
+    let next;
+    let term;
+    let searchGeneration = 0;
+    const more = button('More results', () => load(next), 'quiet');
+    more.hidden = true;
+    resultPanel.append(status, results, more);
+    const context = element('div', '', 'chat-context');
+    context.hidden = true;
+    modal.body.append(form, resultPanel, context);
+    query.focus();
+    formAction(form, async () => {
+      modal.error('');
+      term = query.value.trim();
+      if (!term) return;
+      await load();
+    }, modal.error);
+
+    async function load(before) {
+      const ticket = before ? searchGeneration : ++searchGeneration;
+      if (!before) {
+        results.replaceChildren();
+        status.textContent = 'Searching…';
+        more.hidden = true;
+      }
+      const params = new URLSearchParams({ q: term });
+      if (before) params.set('before', before);
+      let page;
+      try {
+        page = await request(base + 'message-search?' + params);
+      } catch (error) {
+        if (ticket !== searchGeneration || chatSearch !== modal) return;
+        if (!before) status.textContent = '';
+        throw error;
+      }
+      if (chatSearch !== modal || ticket !== searchGeneration) return;
+      for (const hit of page.items) {
+        const result = element('li');
+        const open = button('', () => showResult(hit.id), 'chat-search-hit');
+        const meta = element('span', '', 'chat-search-hit-meta');
+        meta.append(element('strong', hit.author), element('span', dateTime(hit.created)));
+        open.append(meta);
+        if (hit.excerpt) open.append(element('span', hit.excerpt, 'chat-search-excerpt'));
+        if (hit.files) open.append(element('span', hit.files, 'attachment-meta'));
+        result.append(open);
+        results.append(result);
+      }
+      next = page.next;
+      more.hidden = next === null;
+      status.textContent = results.children.length
+        ? results.children.length + (next === null ? ' results' : ' results loaded') : 'No messages found.';
+    }
+
+    async function showResult(id) {
+      const row = $('chat-line-' + id);
+      if (row) {
+        modal.el.close();
+        row.tabIndex = -1;
+        row.focus({ preventScroll: true });
+        row.scrollIntoView({ block: 'center' });
+        return;
+      }
+      const ticket = ++searchGeneration;
+      const batch = await request(base + 'messages?around=' + id);
+      if (chatSearch !== modal || ticket !== searchGeneration) return;
+      const back = button('Back to results', () => {
+        context.hidden = true;
+        form.hidden = resultPanel.hidden = false;
+        query.focus();
+      }, 'quiet');
+      const messages = element('ol', '', 'chat-context-messages');
+      for (const data of batch) {
+        const row = message(data, true);
+        if (data.id === id) row.classList.add('context-match');
+        messages.append(row);
+      }
+      context.replaceChildren(back, messages);
+      form.hidden = resultPanel.hidden = true;
+      context.hidden = false;
+      back.focus();
     }
   }
 
@@ -241,6 +444,7 @@ function activateRoom(code, initial) {
     }
     const restorePosition = showChat && chat.hidden;
     chat.hidden = !showChat;
+    searchButton.hidden = !showChat;
     gallery.hidden = activeLink !== 'gallery-link' || showAsset;
     assetScreen.hidden = !showAsset;
     $('asset-toolbar').hidden = !showAsset;
@@ -263,11 +467,12 @@ function activateRoom(code, initial) {
   }
 
   function applyRoomSettings(room, submitted = {}) {
-    for (const [key, field] of Object.entries(settingsFields)) {
-      if (!roomSettings || field.value === String(roomSettings[key]) || field.value === submitted[key]) {
-        field.value = room[key];
-      }
+    if (!roomSettings || settingsName.value === roomSettings.title || settingsName.value === submitted.title) {
+      settingsName.value = room.title;
     }
+    const current = expiry.draft();
+    if (!roomSettings || sameClosure(current, closureDraft(roomSettings)) ||
+        (submitted.closure && sameClosure(current, submitted.closure))) expiry.fill(room);
     roomSettings = room;
   }
 
@@ -296,10 +501,9 @@ function activateRoom(code, initial) {
 
   formAction($('room-settings-form'), async () => {
     showError($('manage-error'));
-    const draft = { title: settingsFields.title.value, hours: settingsFields.hours.value };
-    const data = {};
+    const draft = { title: settingsName.value, closure: expiry.draft() };
+    const data = expiry.read(roomSettings);
     if (draft.title.trim() !== roomSettings.title) data.title = draft.title;
-    if (settingsFields.hours.valueAsNumber !== roomSettings.hours) data.hours = settingsFields.hours.valueAsNumber;
     if (!Object.keys(data).length) return notify('No changes to save.');
     try {
       const { room } = await request(adminRoomAPI(code), { method: 'PATCH', data });
@@ -364,7 +568,7 @@ function activateRoom(code, initial) {
     if (!alive || polling) return;
     polling = true;
     if (!document.hidden && Date.now() >= nextManagementCheck) void checkManagement();
-    let nextDelay = 1800;
+    let nextDelay = document.hidden ? 15000 : 1800;
     try {
       const data = await request(base + 'state');
       if (!alive) return;
@@ -385,7 +589,7 @@ function activateRoom(code, initial) {
         showJoin(code, error.message);
       } else if (alive) {
         connected(false);
-        nextDelay = 4500;
+        nextDelay = document.hidden ? 15000 : 4500;
       }
     } finally {
       polling = false;
@@ -536,10 +740,13 @@ function activateRoom(code, initial) {
     if (attachments.length) {
       sendingAttachments = true;
       updateDraft();
+      uploadProgress.value = 0;
+      uploadProgress.hidden = false;
       try {
-        await shareAttachments(base, sent, attachments);
+        await shareAttachments(base, sent, attachments, (percent) => { uploadProgress.value = percent; });
         attachments = [];
       } finally {
+        uploadProgress.hidden = true;
         sendingAttachments = false;
         updateDraft();
       }
@@ -597,6 +804,9 @@ function activateRoom(code, initial) {
       else if (!gallery.hidden) {
         event.preventDefault();
         $('asset-search').focus();
+      } else if (!chat.hidden) {
+        event.preventDefault();
+        openChatSearch();
       }
     }
   });
@@ -624,13 +834,17 @@ function roomCard(room) {
   const code = element('span', formatCode(room.code), 'mono room-id');
   const title = element('h3', room.title);
   const detail = element('p', '', 'muted');
-  detail.append(code, ' · Online: ' + room.online + ' · Retention: ' + room.hours + ' hours');
-  if (!room.online) detail.append(' · Expires: ' + dateTime(room.expires));
+  detail.append(code, ' · Online: ' + room.online);
+  if (room.close_at != null) detail.append(' · Closes: ' + dateTime(room.close_at));
+  else {
+    detail.append(' · Retention: ' + room.hours + ' hours');
+    if (!room.online) detail.append(' · Expires: ' + dateTime(room.expires));
+  }
   const actions = element('div', '', 'small-actions');
   actions.append(
     link('Open', roomLink(room.code)),
     button('Copy link', () => copyText(fullLink(room.code), 'Room link copied.')),
-    button('Edit retention', () => changeRetention(room)),
+    button('Edit auto-close', () => changeClosure(room)),
     button('Close', async () => {
       if (!await closeRoom(room.code)) return;
       await loadRooms();
@@ -641,27 +855,21 @@ function roomCard(room) {
   return item;
 }
 
-function changeRetention(room) {
-  const modal = present('Room retention');
+function changeClosure(room) {
+  const modal = present('Room auto-close');
   const form = element('form', '', 'dialog-form');
-  const label = element('label', 'Hours after everyone leaves');
-  label.htmlFor = 'retention';
-  const input = element('input');
-  input.id = 'retention';
-  input.type = 'number';
-  input.min = '1';
-  input.max = '8760';
-  input.required = true;
-  input.value = room.hours;
+  const expiry = closureFields('retention');
+  expiry.fill(room);
   const submit = element('button', 'Save', 'primary');
   submit.type = 'submit';
-  form.append(label, input, submit);
+  form.append(expiry.node, submit);
   modal.body.append(form);
   formAction(form, async () => {
-    await request(adminRoomAPI(room.code), { method: 'PATCH', data: { hours: input.valueAsNumber } });
+    const data = expiry.read(room);
+    if (Object.keys(data).length) await request(adminRoomAPI(room.code), { method: 'PATCH', data });
     modal.el.close();
     await loadRooms();
-    notify('Retention updated.');
+    notify('Auto-close settings saved.');
   }, modal.error);
 }
 
@@ -669,7 +877,7 @@ let displayedRooms;
 
 async function loadRooms() {
   const rooms = await request(adminAPI + 'rooms');
-  const snapshot = JSON.stringify(rooms.map((room) => ({ ...room, expires: room.online ? 0 : room.expires })));
+  const snapshot = JSON.stringify(rooms.map((room) => ({ ...room, expires: room.online && room.close_at == null ? 0 : room.expires })));
   if (snapshot === displayedRooms) return;
   displayedRooms = snapshot;
   $('room-count').textContent = rooms.length;
@@ -708,10 +916,13 @@ $('admin-logout').addEventListener('click', () => run($('admin-logout'), async (
   view('login-view');
 }));
 
+const newExpiry = closureFields('new');
+$('new-expiry').append(newExpiry.node);
 formAction($('create-form'), async () => {
-  const data = { title: $('new-title').value, hours: $('new-hours').valueAsNumber };
+  const data = { title: $('new-title').value, ...newExpiry.read() };
   const room = await request(adminAPI + 'rooms', { method: 'POST', data });
   $('create-form').reset();
+  newExpiry.fill({ hours: 24, close_at: null });
   await loadRooms();
   const modal = present('Room created');
   const actions = element('div', '', 'small-actions');

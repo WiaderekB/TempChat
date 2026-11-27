@@ -29,6 +29,7 @@ const iconPaths = {
   unified: 'M4 5h16v14H4Zm3 4h10M7 12h7m-7 3h10',
   link: 'M10 13a4 4 0 0 0 6 .5l3-3a4 4 0 0 0-5.5-5.7l-1.7 1.6m2.2 4.6a4 4 0 0 0-6-.5l-3 3a4 4 0 0 0 5.5 5.7l1.7-1.6',
   history: 'M3 11a9 9 0 1 1 2 6m-2-12v6h6m3-4v5l3 2',
+  search: 'M20 20l-4.4-4.4M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z',
 };
 
 export function glyph(name) {
@@ -76,14 +77,36 @@ export async function request(path, options = {}) {
     },
     body: data instanceof Blob ? data : data === undefined ? undefined : JSON.stringify(data),
   });
-  const result = await response.json().catch(() => null);
-  if (!response.ok || result === null) {
-    const error = new Error(result?.error ?? (response.status === 413
+  return jsonResult(response.status, await response.json().catch(() => null));
+}
+
+function jsonResult(status, result) {
+  if (status < 200 || status >= 300 || result === null) {
+    const error = new Error(result?.error ?? (status === 413
       ? 'The upload exceeds the server limit.' : 'The server returned an unexpected response.'));
-    error.status = response.status;
+    error.status = status;
     throw error;
   }
   return result;
+}
+
+export function upload(path, data, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', path);
+    xhr.responseType = 'json';
+    xhr.setRequestHeader('X-TempChat', '1');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) onProgress(Math.floor(100 * event.loaded / event.total));
+    });
+    xhr.addEventListener('load', () => {
+      try { resolve(jsonResult(xhr.status, xhr.response)); }
+      catch (error) { reject(error); }
+    });
+    xhr.addEventListener('error', () => reject(new Error('The upload connection was interrupted. Try again.')));
+    xhr.send(data);
+  });
 }
 
 export async function run(control, action, feedback = notify) {

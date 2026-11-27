@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import traceback
+import unicodedata
 from collections import deque
 from contextlib import closing
 from http import HTTPStatus
@@ -24,6 +25,9 @@ from tex_worker import ENGINES, request_pdf
 
 ROOT = Path(__file__).resolve().parent
 PRESENCE = 90
+MAX_CLOSE_AT = 253402300799  # 9999-12-31T23:59:59Z
+LAST_MESSAGE = 2**63 - 1
+CHAT_SEARCH_PAGE = 25
 STATIC = {'/': 'index.html', '/admin': 'index.html', '/app.js': 'app.js',
           '/files.js': 'files.js', '/ui.js': 'ui.js', '/style.css': 'style.css',
           '/asset-view.js': 'asset-view.js', '/pdf-preview.js': 'pdf-preview.js',
@@ -49,6 +53,23 @@ def retention(data):
     hours = data.get('hours',24)
     require(type(hours) is int and 1 <= hours <= 8760, 400, 'Choose a retention period between 1 and 8,760 hours.')
     return hours
+
+
+def scheduled_close(data, now):
+    deadline = data.get('close_at')
+    require(deadline is None or type(deadline) is int and now < deadline <= MAX_CLOSE_AT,
+            400, 'Choose a closing date and time in the future.')
+    return deadline
+
+
+def fold_text(value):
+    return unicodedata.normalize('NFC', value or '').casefold()
+
+
+def message_id(value):
+    require(re.fullmatch(r'[0-9]{1,19}', value) and int(value) <= LAST_MESSAGE,
+            400, 'Invalid message position.')
+    return int(value)
 
 
 def token_hash(value):
@@ -90,8 +111,10 @@ class App:
         Path(directory).mkdir(parents=True, exist_ok=True)
         self.database = str(Path(directory) / 'rooms.sqlite3')
         self.limits = {}
+        self.limit_prune_at = 0
         self.limit_lock = threading.Lock()
         self.uploads = threading.BoundedSemaphore(3)
+        self.searches = threading.BoundedSemaphore(2)
         self.tex_socket = tex_socket
         self.tex_job = threading.BoundedSemaphore()
         with closing(self.connect()) as db:
@@ -99,6 +122,7 @@ class App:
             with db:
                 db.execute('BEGIN IMMEDIATE')
                 for table, name, declaration in (
+                    ('rooms', 'close_at', 'INTEGER'),
                     ('messages', 'sender', 'TEXT'),
                     ('messages', 'attachments', 'TEXT'),
                     ('versions', 'lang', "TEXT NOT NULL DEFAULT ''"),
@@ -115,6 +139,7 @@ class App:
         db.row_factory = sqlite3.Row
         db.execute('PRAGMA foreign_keys=ON')
         db.execute('PRAGMA secure_delete=ON')
+        db.create_function('fold_text', 1, fold_text, deterministic=True)
         return db
 
     def clean(self, db, now):
@@ -141,8 +166,10 @@ class App:
                 pass
         key = (action,identity)
         with self.limit_lock:
-            if len(self.limits) > 512:
+            if len(self.limits) > 512 and now >= self.limit_prune_at:
                 self.limits = {k:q for k,q in self.limits.items() if q and q[-1]>now-60}
+                self.limit_prune_at = now + 5
+            require(key in self.limits or len(self.limits) < 4096, 429, 'Too many requests. Try again shortly.')
             q = self.limits.setdefault(key, deque())
             while q and q[0] <= now-60:
                 q.popleft()
@@ -250,7 +277,7 @@ class App:
             if action == 'leave' and method == 'POST':
                 db.execute('DELETE FROM members WHERE token=?',(member['token'],))
                 if not db.execute('SELECT 1 FROM members WHERE room=? AND seen>?',(room, now-PRESENCE)).fetchone():
-                    db.execute('UPDATE rooms SET expires=?+hours*3600 WHERE code=?',(now,room))
+                    db.execute('UPDATE rooms SET expires=?+hours*3600 WHERE code=? AND close_at IS NULL',(now,room))
                 self.set_cookie(req,'member','',f'/api/room/{room}/',0)
                 return {'ok':True}
             if action == 'messages':
@@ -273,13 +300,19 @@ class App:
                 items = assets.catalog(db, room)
                 return {'files': [item for item in items if item['kind'] != 'code'],
                         'codes': [item for item in items if item['kind'] == 'code']}
-            if action == 'search' and method == 'GET':
-                query = req.arg('q').strip()
-                category = req.arg('category', 'all')
-                offset = req.arg('offset', '0')
-                require(0 < len(query) <= 1024 and category in ('all', 'files', 'codes') and
-                        re.fullmatch(r'[0-9]{1,9}', offset), 400, 'Invalid search.')
-                return assets.search_paths(db, room, query, category, int(offset))
+            if action in ('search', 'message-search') and method == 'GET':
+                require(self.searches.acquire(blocking=False), 503, 'Other searches are running. Try again shortly.')
+                try:
+                    if action == 'message-search':
+                        return self.search_messages(db, req, room)
+                    query = req.arg('q').strip()
+                    category = req.arg('category', 'all')
+                    offset = req.arg('offset', '0')
+                    require(0 < len(query) <= 1024 and category in ('all', 'files', 'codes') and
+                            re.fullmatch(r'[0-9]{1,9}', offset), 400, 'Invalid search.')
+                    return assets.search_paths(db, room, query, category, int(offset))
+                finally:
+                    self.searches.release()
             code = re.fullmatch(r'code/(\d+)',action)
             if code and method == 'GET':
                 row = db.execute("SELECT id,author,body,lang,created,asset,num FROM messages "
@@ -302,20 +335,53 @@ class App:
 
     @staticmethod
     def touch(db,room,now):
-        db.execute('UPDATE rooms SET expires=?+hours*3600 WHERE code=?',(now+PRESENCE,room))
+        db.execute('UPDATE rooms SET expires=?+hours*3600 WHERE code=? AND close_at IS NULL',(now+PRESENCE,room))
 
     @staticmethod
     def messages(db,req,room,token):
         query = ('SELECT m.id,m.room,m.kind,m.author,m.body,m.lang,m.asset,m.num,m.created,m.attachments,a.name,a.kind AS asset_kind,'
                  'coalesce(m.sender=?,0) AS mine FROM messages m LEFT JOIN assets a ON a.id=m.asset WHERE m.room=?')
-        if req.arg('after'):
-            batch = rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 80',(token,room,int(req.arg('after')))))
+        around = req.arg('around')
+        if around:
+            target = message_id(around)
+            nearby = rows(db.execute(query+' AND m.id<=? ORDER BY m.id DESC LIMIT 5', (token, room, target)))
+            require(nearby and nearby[0]['id'] == target, 404, 'Message not found.')
+            batch = nearby[::-1] + rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 4', (token, room, target)))
+        elif req.arg('after'):
+            batch = rows(db.execute(query+' AND m.id>? ORDER BY m.id LIMIT 80', (token, room, message_id(req.arg('after')))))
         else:
-            batch = rows(db.execute(query+' AND m.id<? ORDER BY m.id DESC LIMIT 80',(token,room,int(req.arg('before',str(2**63-1))))))[::-1]
+            before = message_id(req.arg('before', str(LAST_MESSAGE)))
+            batch = rows(db.execute(query+' AND m.id<? ORDER BY m.id DESC LIMIT 80', (token, room, before)))[::-1]
         for item in batch:
             if attachments := item.pop('attachments'):
                 item['attachments'] = json.loads(attachments)
         return batch
+
+    @staticmethod
+    def search_messages(db, req, room):
+        query = req.arg('q').strip()
+        require(0 < len(query) <= 160, 400, 'Enter between 1 and 160 characters to search.')
+        term = fold_text(query)
+        before = message_id(req.arg('before', str(LAST_MESSAGE)))
+        hits = rows(db.execute(
+            'SELECT m.id,m.author,m.created,m.body,a.name,m.attachments '
+            'FROM messages m LEFT JOIN assets a ON a.id=m.asset WHERE m.room=? AND m.id<? AND ('
+            'instr(fold_text(m.body),?)>0 OR instr(fold_text(m.author),?)>0 OR instr(fold_text(a.name),?)>0 OR '
+            'EXISTS (SELECT 1 FROM json_each(m.attachments) WHERE instr(fold_text(json_extract(value,'
+            "'$.name')),?)>0)) ORDER BY m.id DESC LIMIT ?",
+            (room, before, term, term, term, term, CHAT_SEARCH_PAGE + 1)))
+        page = hits[:CHAT_SEARCH_PAGE]
+        for hit in page:
+            body = ' '.join(hit.pop('body').split())
+            names = [item['name'] for item in json.loads(hit.pop('attachments') or '[]')]
+            if name := hit.pop('name'):
+                names.append(name)
+            match = fold_text(body).find(term)
+            start = min(max(0, match - 60), max(0, len(body) - 180))
+            end = start + 180
+            hit['excerpt'] = ('…' if start else '') + body[start:end] + ('…' if len(body) > end else '')
+            hit['files'] = ' · '.join(names)[:220]
+        return {'items': page, 'next': page[-1]['id'] if len(hits) > CHAT_SEARCH_PAGE else None}
 
     def admin(self,db,req,now):
         action = req.path.removeprefix('/api/admin/')
@@ -342,11 +408,13 @@ class App:
         if action == 'rooms' and method == 'POST':
             data = req.body()
             name, hours = field(data,'title',80), retention(data)
+            close_at = scheduled_close(data, now)
             while True:
                 code = f'{secrets.randbelow(1000000):06}'
                 if not db.execute('SELECT 1 FROM rooms WHERE code=?',(code,)).fetchone():
                     break
-            db.execute('INSERT INTO rooms VALUES(?,?,?,?,?)',(code,name,hours,now,now+hours*3600))
+            db.execute('INSERT INTO rooms(code,title,hours,created,expires,close_at) VALUES(?,?,?,?,?,?)',
+                       (code, name, hours, now, close_at if close_at is not None else now + hours * 3600, close_at))
             return {'code':code}
         match = re.fullmatch(r'rooms/(\d{6})',action)
         if match:
@@ -355,13 +423,23 @@ class App:
                 return dict(room)
             if method == 'PATCH':
                 data = req.body()
-                require('title' in data or 'hours' in data, 400, 'Provide a room name or retention period.')
+                require(any(key in data for key in ('title', 'hours', 'close_at')), 400,
+                        'Provide a room name or auto-close setting.')
                 title = field(data, 'title', 80) if 'title' in data else room['title']
                 hours = retention(data) if 'hours' in data else room['hours']
-                expires = room['expires'] + 3600 * (hours - room['hours'])
-                db.execute('UPDATE rooms SET title=?,hours=?,expires=? WHERE code=?',
-                           (title, hours, expires, room['code']))
-                return {'ok': True, 'room': {**dict(room), 'title': title, 'hours': hours, 'expires': expires}}
+                close_at = scheduled_close(data, now) if 'close_at' in data else room['close_at']
+                if close_at is not None:
+                    expires = close_at
+                elif room['close_at'] is not None:
+                    occupied = db.execute('SELECT 1 FROM members WHERE room=? AND seen>?',
+                                          (room['code'], now - PRESENCE)).fetchone()
+                    expires = now + hours * 3600 + (PRESENCE if occupied else 0)
+                else:
+                    expires = room['expires'] + 3600 * (hours - room['hours'])
+                db.execute('UPDATE rooms SET title=?,hours=?,expires=?,close_at=? WHERE code=?',
+                           (title, hours, expires, close_at, room['code']))
+                return {'ok': True, 'room': {**dict(room), 'title': title, 'hours': hours, 'expires': expires,
+                                             'close_at': close_at}}
             if method == 'DELETE':
                 db.execute('DELETE FROM rooms WHERE code=?',(room['code'],))
                 return {'ok':True}

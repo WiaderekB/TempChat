@@ -5,6 +5,8 @@ GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.mjs';
 
 export function pdfPreview({ blob, url }, filename) {
   const panel = element('div');
+  panel.tabIndex = 0;
+  panel.setAttribute('aria-label', 'PDF viewer');
   const toolbar = element('div', '', 'pdf-actions');
   const status = element('span', 'Loading PDF preview…', 'muted');
   status.setAttribute('role', 'status');
@@ -44,12 +46,21 @@ export function pdfPreview({ blob, url }, filename) {
   let document;
   let loading;
   let disposed = false;
+  let drawing = false;
 
   previous.addEventListener('click', () => { void draw(page - 1); });
   next.addEventListener('click', () => { void draw(page + 1); });
   decrease.addEventListener('click', () => setZoom(scale - 25));
   increase.addEventListener('click', () => setZoom(scale + 25));
   reset.addEventListener('click', () => setZoom(100));
+  panel.addEventListener('keydown', (event) => {
+    if (!document || drawing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    const step = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0;
+    const target = page + step;
+    if (!step || target < 1 || target > document.numPages) return;
+    event.preventDefault();
+    void draw(target);
+  });
   setZoom(100);
   void load();
 
@@ -75,6 +86,7 @@ export function pdfPreview({ blob, url }, filename) {
   }
 
   async function draw(number) {
+    drawing = true;
     previous.disabled = next.disabled = true;
     try {
       const sheet = await document.getPage(number);
@@ -95,6 +107,7 @@ export function pdfPreview({ blob, url }, filename) {
     } catch {
       if (!disposed) status.textContent = 'This page could not be rendered.';
     } finally {
+      drawing = false;
       previous.disabled = page <= 1;
       next.disabled = page >= document.numPages;
     }

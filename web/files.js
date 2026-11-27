@@ -1,4 +1,4 @@
-import { $, element, link, request, choose, notify, languageLabel, formatBytes, glyph, run } from './ui.js';
+import { $, element, link, request, upload, choose, notify, languageLabel, formatBytes, glyph, run } from './ui.js';
 import { assetBrowser, assetHash } from './asset-view.js';
 
 const MAX_ENTRIES = 10000;
@@ -84,11 +84,11 @@ export function attachmentSize(packet) {
   return packet.entries.reduce((total, { file }) => total + (file?.size ?? 0), 0);
 }
 
-export function shareAttachments(base, text, packets) {
+export function shareAttachments(base, text, packets, onProgress) {
   const bodies = packets.map((packet) => packetBody(packet));
   const batch = framedBody({ text, sizes: bodies.map(({ size }) => size) }, bodies);
   if (batch.size > MAX_BYTES + MAX_HEADER + 4) throw new Error('The attachments exceed the upload limit.');
-  return request(base + 'share', { method: 'POST', data: batch });
+  return upload(base + 'share', batch, onProgress);
 }
 
 export function limitAttachments(packets) {

@@ -89,6 +89,7 @@
         </div>
       </div>
       <div class="room-actions">
+        <button class="quiet" type="button" id="chat-search" aria-haspopup="dialog" aria-keyshortcuts="/" hidden>Search chat</button>
         <button class="quiet" type="button" id="show-people" aria-haspopup="dialog" title="Participants"><span class="people-icon" aria-hidden="true"></span><span id="people-count">0</span></button>
         <button class="quiet" type="button" id="share-room">Copy link</button>
         <button class="quiet" type="button" id="leave-room">Leave</button>
@@ -135,6 +136,7 @@
               </select>
             </div>
             <ul id="pending-attachments" class="pending-attachments" aria-label="Attachments to send" hidden></ul>
+            <progress id="chat-upload-progress" max="100" aria-label="Uploading attachments" hidden></progress>
             <div class="compose-tools">
               <details id="attach-menu" class="attach-menu">
                 <summary id="attach-toggle" class="icon-control quiet" title="Attach" aria-label="Attach files or folder"></summary>
@@ -205,9 +207,7 @@
           <form id="room-settings-form">
             <label for="manage-name">Room name</label>
             <input id="manage-name" maxlength="80" required>
-            <label for="manage-hours">Retention after everyone leaves</label>
-            <input id="manage-hours" type="number" min="1" max="8760" step="1" required aria-describedby="manage-hours-hint">
-            <p id="manage-hours-hint" class="muted">1 to 8,760 hours.</p>
+            <div id="manage-expiry"></div>
             <p class="error" id="manage-error" role="alert" hidden></p>
             <button class="primary" type="submit">Save changes</button>
           </form>
@@ -249,9 +249,7 @@
         <form id="create-form">
           <label for="new-title">Room name</label>
           <input id="new-title" required maxlength="80" placeholder="e.g. Java lab">
-          <label for="new-hours">Retention after everyone leaves</label>
-          <div class="unit-input"><input id="new-hours" type="number" min="1" max="8760" step="1" value="24" required><span>hours</span></div>
-          <p class="muted">1 to 8,760 hours.</p>
+          <div id="new-expiry"></div>
           <button type="submit" class="primary">Create room</button>
         </form>
       </section>

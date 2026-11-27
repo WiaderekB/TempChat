@@ -352,7 +352,8 @@ class TempChatTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory, 'rooms.sqlite3')
             schema = Path(__file__).resolve().parents[1].joinpath('schema.sql').read_text()
-            legacy = schema.replace(", lang TEXT NOT NULL DEFAULT ''", '').replace(', sender TEXT, attachments TEXT', '')
+            legacy = (schema.replace(", lang TEXT NOT NULL DEFAULT ''", '')
+                      .replace(', sender TEXT, attachments TEXT', '').replace(', close_at INTEGER', ''))
             now = int(time.time())
             with closing(sqlite3.connect(database)) as db, db:
                 db.executescript(legacy)
@@ -593,3 +594,71 @@ class TempChatTest(unittest.TestCase):
             self.assertTrue(db.execute('SELECT 1 FROM blobs').fetchone())
             self.app.clean(db, left_at + 3600)
             self.assertFalse(db.execute('SELECT 1 FROM blobs').fetchone())
+
+    def test_scheduled_room_closes_with_people_online_and_purges_data(self):
+        start = 1_800_000_000
+        deadline = start + 600
+        with patch('server.time.time', return_value=start) as clock:
+            self.call(self.admin, 200, 'POST', '/api/admin/login', {'password': PASSWORD})
+            for invalid in (True, start - 1, start, 'tomorrow'):
+                self.call(self.admin, 400, 'POST', '/api/admin/rooms', {'title': 'Invalid', 'close_at': invalid})
+            room = self.call(self.admin, 200, 'POST', '/api/admin/rooms', {'title': 'Scheduled', 'close_at': deadline})
+            path = '/api/admin/rooms/' + room['code']
+            self.base = '/api/room/' + room['code'] + '/'
+            self.call(self.ala, 200, 'POST', self.base + 'join', {'nick': 'Ala'})
+            self.save(make_packet('notes.txt', 'file', {'notes.txt': b'data'}))
+            clock.return_value = start + 30
+            self.call(self.ala, 200, 'GET', self.base + 'state')
+            self.call(self.ala, 200, 'POST', self.base + 'leave')
+            saved = self.call(self.admin, 200, 'PATCH', path, {'title': 'Renamed', 'hours': 2})['room']
+            self.assertEqual((saved['expires'], saved['close_at']), (deadline, deadline))
+            clock.return_value = deadline - 1
+            self.call(self.ala, 200, 'POST', self.base + 'join', {'nick': 'Ala'})
+            self.assertEqual(self.call(self.admin, 200, 'GET', '/api/admin/rooms')[0]['online'], 1)
+            clock.return_value = deadline
+            self.call(self.ala, 404, 'GET', self.base + 'state')
+            self.call(self.ola, 404, 'POST', self.base + 'join', {'nick': 'Ola'})
+            self.assertEqual(self.call(self.admin, 200, 'GET', '/api/admin/rooms'), [])
+            with closing(self.app.connect()) as db:
+                self.app.clean(db, deadline)
+                for table in ('rooms', 'members', 'messages', 'assets', 'versions', 'blobs'):
+                    self.assertEqual(db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
+
+    def test_room_can_switch_between_fixed_deadline_and_idle_retention(self):
+        now = 1_800_000_000
+        with patch('server.time.time', return_value=now) as clock:
+            base = self.room(hours=2)
+            path = '/api/admin/rooms/' + self.code
+            fixed = self.call(self.admin, 200, 'PATCH', path, {'close_at': now + 100})['room']
+            self.assertEqual(fixed['expires'], now + 100)
+            clock.return_value = now + 20
+            idle = self.call(self.admin, 200, 'PATCH', path, {'close_at': None})['room']
+            self.assertIsNone(idle['close_at'])
+            self.assertEqual(idle['hours'], 2)
+            clock.return_value = now + 30
+            self.call(self.ala, 200, 'POST', base + 'leave')
+            self.assertEqual(self.call(self.admin, 200, 'GET', path)['expires'], now + 30 + 7200)
+
+    def test_chat_search_finds_old_unicode_messages_and_shared_files(self):
+        base = self.room()
+        for index in range(30):
+            self.call(self.ala, 200, 'POST', base + 'messages', {'kind': 'text', 'body': f'Wrocław {index}'})
+        packet = make_packet('Raport.pdf', 'file', {'Raport.pdf': b'%PDF-1.7'})
+        self.call(self.ala, 200, 'POST', base + 'share', make_share('Załącznik', packet))
+        search = base + 'message-search'
+        self.call(self.ola, 401, 'GET', search + '?q=Raport')
+        self.call(self.ala, 400, 'GET', search + '?q=Raport&before=9999999999999999999')
+        page = self.call(self.ala, 200, 'GET', search + '?q=WROC%C5%81AW')
+        self.assertEqual(len(page['items']), 25)
+        tail = self.call(self.ala, 200, 'GET', search + f'?q=Wroc%C5%82aw&before={page["next"]}')
+        self.assertEqual([hit['excerpt'] for hit in tail['items']], [f'Wrocław {n}' for n in range(4, -1, -1)])
+        self.assertIsNone(tail['next'])
+        self.assertEqual(self.call(self.ala, 200, 'GET', search + '?q=RAPORT.PDF')['items'][0]['files'], 'Raport.pdf')
+        target = tail['items'][-1]['id']
+        context = self.call(self.ala, 200, 'GET', base + f'messages?around={target}')
+        self.assertEqual([item['body'] for item in context], [f'Wrocław {n}' for n in range(5)])
+        other = self.call(self.admin, 200, 'POST', '/api/admin/rooms', {'title': 'Private room'})
+        other_base = '/api/room/' + other['code'] + '/'
+        self.call(self.ola, 200, 'POST', other_base + 'join', {'nick': 'Ola'})
+        self.assertEqual(self.call(self.ola, 200, 'GET', other_base + 'message-search?q=Raport')['items'], [])
+        self.call(self.ola, 404, 'GET', other_base + f'messages?around={target}')
